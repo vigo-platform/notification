@@ -5,11 +5,13 @@ import java.io.StringWriter;
 import java.util.List;
 
 import ir.vigo.notification.delivery.EmailDelivery;
+import ir.vigo.notification.delivery.SmtpEmailConfiguration;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.kafka.autoconfigure.KafkaAutoConfiguration;
+import org.springframework.boot.mail.autoconfigure.MailSenderAutoConfiguration;
 import org.springframework.boot.test.context.ConfigDataApplicationContextInitializer;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.boot.test.system.CapturedOutput;
@@ -50,9 +52,22 @@ class NotificationKafkaConfigurationTests {
                 "spring.kafka.bootstrap-servers=unused.invalid:9092")
                 .run(context -> assertThat(context).hasFailed().getFailure().hasRootCauseMessage(
                         "Kafka consumption requires an EmailDelivery implementation; "
-                        + "real email delivery is pending SCRUM-112. Disable NOTIFICATION_KAFKA_ENABLED."));
+                        + "enable NOTIFICATION_EMAIL_ENABLED with valid SMTP configuration or disable NOTIFICATION_KAFKA_ENABLED."));
         assertThat(output.getAll()).doesNotContain("BOUNDARY_ACCEPTED", "KafkaConsumer",
                 NotificationCommandConsumerTests.OTP, NotificationCommandConsumerTests.DESTINATION);
+    }
+
+    @Test
+    void realEmailAdapterSatisfiesKafkaWiringWithoutNetwork() {
+        runner.withConfiguration(AutoConfigurations.of(MailSenderAutoConfiguration.class))
+                .withUserConfiguration(SmtpEmailConfiguration.class)
+                .withPropertyValues("notification.kafka.enabled=true", "notification.email.enabled=true",
+                        "spring.kafka.bootstrap-servers=unused.invalid:9092", "spring.kafka.listener.auto-startup=false",
+                        "spring.mail.host=smtp.example.invalid", "spring.mail.port=587",
+                        "spring.mail.username=test-user", "spring.mail.password=test-password",
+                        "notification.email.from-address=sender@example.invalid")
+                .run(context -> assertThat(context).hasNotFailed().hasSingleBean(EmailDelivery.class)
+                        .hasSingleBean(NotificationCommandConsumer.class));
     }
 
     @Test
