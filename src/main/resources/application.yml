@@ -3,6 +3,21 @@ spring:
     name: vigo-notification-service
   jmx:
     enabled: false
+  mail:
+    host: ${SMTP_HOST:}
+    port: ${SMTP_PORT:}
+    username: ${SMTP_USERNAME:}
+    password: ${SMTP_PASSWORD:}
+    default-encoding: UTF-8
+    test-connection: false
+    properties:
+      "[mail.smtp.auth]": ${SMTP_AUTH:true}
+      "[mail.smtp.starttls.enable]": ${SMTP_STARTTLS_ENABLED:true}
+      "[mail.smtp.starttls.required]": ${SMTP_STARTTLS_ENABLED:true}
+      "[mail.smtp.connectiontimeout]": ${SMTP_CONNECTION_TIMEOUT_MS:5000}
+      "[mail.smtp.timeout]": ${SMTP_READ_TIMEOUT_MS:5000}
+      "[mail.smtp.writetimeout]": ${SMTP_WRITE_TIMEOUT_MS:5000}
+      "[mail.debug]": false
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:}
     consumer:
@@ -18,11 +33,17 @@ spring:
     admin:
       auto-create: false
 notification:
+  email:
+    enabled: ${NOTIFICATION_EMAIL_ENABLED:false}
+    from-address: ${SMTP_FROM_ADDRESS:}
   kafka:
     enabled: ${NOTIFICATION_KAFKA_ENABLED:false}
 server:
   port: ${SERVER_PORT:8080}
 management:
+  health:
+    mail:
+      enabled: false
   endpoints:
     access:
       default: none

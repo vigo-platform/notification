@@ -7,7 +7,7 @@ Maven 3.9.16 and Maven Wrapper tooling 3.3.4 (script-only, matching the API Gate
 Package root: `ir.vigo.notification`. Canonical repository: `vigo-platform/notification`.
 
 The servlet/MVC HTTP stack serves management endpoints only.
-Direct dependencies are `spring-boot-starter-kafka`, `spring-boot-starter-webmvc`, `spring-boot-starter-actuator`
+Direct dependencies are `spring-boot-starter-mail`, `spring-boot-starter-kafka`, `spring-boot-starter-webmvc`, `spring-boot-starter-actuator`
 and test-scoped `spring-boot-starter-webmvc-test`, all managed by Boot 4.1.1.
 Boot 4.1.1 does not publish `spring-boot-starter-web-test`; `webmvc-test` is its
 servlet testing starter. No WebFlux dependency is declared.
@@ -86,17 +86,15 @@ port, and always removes its temporary container. It does not publish or deploy.
 
 The first consumption slice is implemented: `notification.commands` -> strict
 `NotificationRequested` v1 validation -> expiration check -> `EmailDelivery` boundary.
-Real email transport is **not implemented**. Production code defines only the
-`EmailDelivery` interface, with no successful fake or fallback implementation.
-Until SCRUM-112 provides real delivery, enabling Kafka in the normal production
-application intentionally fails startup before listeners start or records are
-consumed. Tests inject their own delivery mocks/implementations.
+SMTP email transport is implemented by SCRUM-112 on this stacked branch.
+Kafka requires the opt-in SMTP `EmailDelivery` adapter and valid configuration;
+without it, startup fails before listeners start or records are consumed.
+No successful fake or fallback implementation is registered.
 
 Contract source: [api-contracts PR #1](https://github.com/vigo-platform/api-contracts/pull/1),
-head `7e3a792d97863c75df4a338570ccd81161f6b3a4`,
+**merged**, final merge commit `705d6d9c05ba43b756963edb47d4a4c584da09d5`,
 `messaging/notification/notification-requested.v1.schema.json` and its README.
-**Do not merge this implementation until the contract PR is approved/merged and
-compatibility with the eventual main contract is rechecked.**
+The final schema is byte-for-byte identical to the schema used by the Kafka implementation.
 
 The Kafka string key must exactly match `event_id`. Only `auth-service`, `EMAIL`,
 the four OTP purposes (login, registration, password change/reset), and `fa`/`en`
@@ -105,14 +103,14 @@ objects, mailbox syntax/lengths and UTC timestamps are validated without coercio
 Duplicate JSON properties and trailing JSON are rejected. Fractions beyond Java's
 nanosecond precision are truncated conservatively, never extending expiry.
 `now >= expires_at` is rejected immediately before the synchronous boundary call.
-A future provider must recheck expiry at actual handoff if it adds work or queuing.
+The SMTP adapter rechecks expiry after rendering immediately before the send call.
 
 ### Runtime configuration
 
 - `NOTIFICATION_KAFKA_ENABLED=false` is the safe default. No listener is registered
   and no broker is needed for the management-only operational foundation.
 - Enabling `NOTIFICATION_KAFKA_ENABLED=true` requires an `EmailDelivery` bean;
-  without it, startup fails with an explicit SCRUM-112 dependency message.
+  without it, startup fails with an explicit email configuration message.
   `KAFKA_BOOTSTRAP_SERVERS` must
   then contain the environment's broker list; a missing/blank value fails startup.
   There is no default address or committed credential.
@@ -163,8 +161,91 @@ Fast tests exercise validation, all purposes/locales, expiry, boundary invocatio
 duplicates, privacy and enabled/disabled wiring without an external or embedded
 Kafka broker. Existing management endpoint checks remain applicable.
 
-No database/JPA, Redis, SMTP/provider, real email, notification history/read-unread,
+No database/JPA, Redis, provider SDK, notification history/read-unread,
 In-App, WebSocket/SSE, REST business endpoints, JWT/security, durable retry, DLQ,
 service discovery, credentials, Auth producer changes or Gateway changes are included.
 The Kafka starter transitively brings Boot transaction/persistence infrastructure
 and `spring-tx`; this does not configure a database or implement persistence.
+
+## SMTP email delivery (SCRUM-112)
+
+This branch implements synchronous `EmailDelivery` with Boot 4.1.1's managed
+`spring-boot-starter-mail` and `JavaMailSender`. See the
+[official Boot mail configuration](https://docs.spring.io/spring-boot/reference/io/email.html).
+It is stacked on `feature/notification-kafka-consumer-v1`; neither branch is merged here.
+
+### Email configuration
+
+Email delivery is opt-in: `NOTIFICATION_EMAIL_ENABLED=false` by default. With both
+email and Kafka disabled, the application starts without infrastructure or credentials.
+`EmailDelivery` exists only when email is explicitly enabled. Enabling Kafka while
+email is disabled still fails fast. Enabling both with valid SMTP configuration
+satisfies the delivery dependency; Kafka also needs its broker configuration.
+
+All deployment values come from environment variables (see `.env.example`). No real
+`.env` is committed. Boot maps SMTP settings through `spring.mail`; no custom mail
+sender replaces its auto-configuration.
+
+| Variable | Requirement / default |
+| --- | --- |
+| `NOTIFICATION_EMAIL_ENABLED` | `false`; set `true` to register the adapter |
+| `SMTP_HOST` | Required when enabled; no default |
+| `SMTP_PORT` | Required when enabled; integer 1–65535, no default |
+| `SMTP_FROM_ADDRESS` | Required valid sender mailbox; no default |
+| `SMTP_USERNAME`, `SMTP_PASSWORD` | Required when auth is enabled; no defaults |
+| `SMTP_AUTH` | `true`; disable explicitly for an unauthenticated relay |
+| `SMTP_STARTTLS_ENABLED` | `true`; enables and requires STARTTLS |
+| `SMTP_CONNECTION_TIMEOUT_MS` | `5000`; positive connection timeout |
+| `SMTP_READ_TIMEOUT_MS` | `5000`; positive read timeout |
+| `SMTP_WRITE_TIMEOUT_MS` | `5000`; positive write timeout |
+
+Separate timeout controls allow deployment tuning; all three must remain positive.
+Missing required settings fail startup using variable names without printing values.
+There is no startup test email or connectivity test (`spring.mail.test-connection=false`).
+The mail health contributor is disabled so operational health requests do not connect
+to SMTP or log provider errors. Configuration validation does not prove reachability.
+
+### Templates, handoff and failures
+
+Notification Service owns eight internal UTF-8 plain-text templates: `LOGIN_OTP`,
+`REGISTRATION_OTP`, `PASSWORD_CHANGE_OTP`, and `PASSWORD_RESET_OTP`, each in `fa` and
+`en`. They contain a purpose-specific explanation, the unchanged six-digit OTP
+(including leading zeros), and an absolute expiry timestamp explicitly marked UTC.
+Auth cannot supply a rendered subject/body. The recipient is the validated command
+destination; the sender comes from configuration.
+
+After rendering and constructing the message, the adapter checks `Clock.systemUTC()`
+immediately before `JavaMailSender.send`. If `now >= expires_at`, it returns without
+sending. This normal return permits Kafka acknowledgment of an expired command.
+SMTP itself takes time; this check does not promise inbox arrival before expiry.
+
+Send success returns normally. Any runtime delivery failure is replaced by a fixed
+sanitized runtime exception without the provider message, cause or suppressed errors.
+It propagates to the existing Kafka stop/preserve-replay error handler. There is no
+internal retry, queue, scheduler, DLQ, persistence or durable duplicate suppression.
+SMTP outcomes can be ambiguous (including partial acceptance before an error);
+replay can duplicate email. There is no exactly-once delivery guarantee. Durable
+duplicate suppression remains future work.
+
+Adapter logs contain fixed outcome/reason codes only. Never log the OTP, recipient,
+SMTP username/password, subject/body, full command or authentication/session data.
+Mail protocol debug is disabled. Keep framework/provider DEBUG/TRACE and protocol
+logging disabled in deployment as well.
+
+### Verification
+
+Unit/component tests use mocked `JavaMailSender`, fixed/controlled clocks and Boot
+context runners, with no real SMTP credentials, email delivery or broker connection.
+They cover all eight templates, configured sender and recipient, leading zeroes,
+expiry at the boundary and after rendering, sanitized provider failures, credential
+privacy, default/required configuration, bounded timeouts and Kafka adapter wiring.
+The full application tests also verify default management startup and endpoints.
+
+```powershell
+.\mvnw.cmd -B -ntp clean verify
+.\mvnw.cmd -B -ntp dependency:tree
+docker build -t vigo-notification-service:email-smtp .
+docker run --rm -e NOTIFICATION_EMAIL_ENABLED=false -e NOTIFICATION_KAFKA_ENABLED=false vigo-notification-service:email-smtp
+# Expected nonzero exit with a missing SMTP_HOST configuration message:
+docker run --rm -e NOTIFICATION_EMAIL_ENABLED=true -e NOTIFICATION_KAFKA_ENABLED=false vigo-notification-service:email-smtp
+```
