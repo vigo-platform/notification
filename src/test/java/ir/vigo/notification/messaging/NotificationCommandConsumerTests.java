@@ -158,6 +158,13 @@ class NotificationCommandConsumerTests {
     }
 
     @Test
+    void reportsExpiryDuringDeliveryWithoutReportingAcceptance(CapturedOutput output) {
+        var consumer = new NotificationCommandConsumer(request -> false, clock);
+        consumer.consume(record(KEY, VALID));
+        assertThat(output.getAll()).contains("REJECTED", "EXPIRED").doesNotContain("BOUNDARY_ACCEPTED");
+    }
+
+    @Test
     void boundaryFailureIsSurfacedWithoutSensitiveExceptionCause(CapturedOutput output) {
         var failing = new NotificationCommandConsumer(request -> {
             throw new IllegalStateException(OTP + " " + DESTINATION);

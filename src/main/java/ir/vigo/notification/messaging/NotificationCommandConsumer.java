@@ -23,18 +23,24 @@ public final class NotificationCommandConsumer {
     public void consume(ConsumerRecord<String, String> record) {
         try {
             var command = parser.parse(record.key(), record.value());
-            if (!clock.instant().isBefore(command.expiresAt())) {
-                log.info("notification outcome=REJECTED reason=EXPIRED");
+            if (!clock.instant().isBefore(command.expiresAt()) || !delivery.deliver(command)) {
+                log.atInfo().addKeyValue("event", "notification_command_rejected")
+                        .addKeyValue("outcome", "REJECTED").addKeyValue("reason", "EXPIRED")
+                        .log("Notification command has expired.");
                 return;
             }
-            // Only a successful boundary return permits normal record acknowledgment.
-            delivery.deliver(command);
-            log.info("notification outcome=BOUNDARY_ACCEPTED");
+            log.atInfo().addKeyValue("event", "notification_command_accepted")
+                    .addKeyValue("outcome", "BOUNDARY_ACCEPTED")
+                    .log("SMTP relay accepted the notification email.");
         } catch (CommandRejected e) {
-            log.warn("notification outcome=REJECTED reason={}", e.getMessage());
+            log.atWarn().addKeyValue("event", "notification_command_rejected")
+                    .addKeyValue("outcome", "REJECTED").addKeyValue("reason", e.getMessage())
+                    .log("Notification command rejected.");
         } catch (RuntimeException e) {
             // Provider/parser exception messages and causes may contain secrets.
-            log.error("notification outcome=FAILED reason=PROCESSING_FAILURE");
+            log.atError().addKeyValue("event", "notification_command_failed")
+                    .addKeyValue("outcome", "FAILED").addKeyValue("reason", "PROCESSING_FAILURE")
+                    .log("Notification command processing failed.");
             throw new IllegalStateException("Notification processing failed; consumer must stop");
         }
     }

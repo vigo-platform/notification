@@ -26,6 +26,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 @ExtendWith(OutputCaptureExtension.class)
 class NotificationKafkaConfigurationTests {
@@ -49,8 +50,7 @@ class NotificationKafkaConfigurationTests {
         runner.withPropertyValues("notification.kafka.enabled=true",
                 "spring.kafka.bootstrap-servers=unused.invalid:9092")
                 .run(context -> assertThat(context).hasFailed().getFailure().hasRootCauseMessage(
-                        "Kafka consumption requires an EmailDelivery implementation; "
-                        + "real email delivery is pending SCRUM-112. Disable NOTIFICATION_KAFKA_ENABLED."));
+                        "Kafka consumption requires an EmailDelivery implementation"));
         assertThat(output.getAll()).doesNotContain("BOUNDARY_ACCEPTED", "KafkaConsumer",
                 NotificationCommandConsumerTests.OTP, NotificationCommandConsumerTests.DESTINATION);
     }
@@ -67,6 +67,7 @@ class NotificationKafkaConfigurationTests {
     @Test
     void enabledWiringUsesRecordCommitsAndInjectedTestBoundary(CapturedOutput output) {
         EmailDelivery delivery = mock(EmailDelivery.class);
+        when(delivery.deliver(any())).thenReturn(true);
         runner.withBean(EmailDelivery.class, () -> delivery)
                 .withPropertyValues("notification.kafka.enabled=true",
                 "spring.kafka.bootstrap-servers=unused.invalid:9092", "spring.kafka.listener.auto-startup=false")

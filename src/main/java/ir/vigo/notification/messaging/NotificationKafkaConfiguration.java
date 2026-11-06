@@ -24,8 +24,7 @@ class NotificationKafkaConfiguration {
             @Value("${spring.kafka.bootstrap-servers}") String bootstrapServers) {
         EmailDelivery delivery = deliveries.getIfAvailable();
         if (delivery == null) {
-            throw new IllegalStateException("Kafka consumption requires an EmailDelivery implementation; "
-                    + "real email delivery is pending SCRUM-112. Disable NOTIFICATION_KAFKA_ENABLED.");
+            throw new IllegalStateException("Kafka consumption requires an EmailDelivery implementation");
         }
         if (bootstrapServers.isBlank()) {
             throw new IllegalStateException("KAFKA_BOOTSTRAP_SERVERS is required when Kafka consumption is enabled");
@@ -51,7 +50,9 @@ class NotificationKafkaConfiguration {
 
             private IllegalStateException safeFailure() {
                 LoggerFactory.getLogger(NotificationKafkaConfiguration.class)
-                        .error("notification outcome=CONSUMER_STOPPED reason=PROCESSING_FAILURE");
+                        .atError().addKeyValue("event", "notification_consumer_stopped")
+                        .addKeyValue("outcome", "CONSUMER_STOPPED").addKeyValue("reason", "PROCESSING_FAILURE")
+                        .log("Notification consumer stopped.");
                 return new IllegalStateException("Notification consumer stopped; operator intervention required");
             }
         };

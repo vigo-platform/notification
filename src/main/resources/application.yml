@@ -1,6 +1,12 @@
+server:
+  port: ${SERVER_PORT:8080}
+  forward-headers-strategy: framework
+
 spring:
   application:
     name: vigo-notification-service
+  config:
+    import: optional:file:./.env[.properties]
   jmx:
     enabled: false
   kafka:
@@ -20,8 +26,28 @@ spring:
 notification:
   kafka:
     enabled: ${NOTIFICATION_KAFKA_ENABLED:false}
-server:
-  port: ${SERVER_PORT:8080}
+  smtp:
+    host: ${SMTP_HOST:}
+    port: ${SMTP_PORT:587}
+    security: ${SMTP_SECURITY:STARTTLS}
+    auth: ${SMTP_AUTH:true}
+    username: ${SMTP_USERNAME:}
+    password: ${SMTP_PASSWORD:}
+    from-address: ${SMTP_FROM_ADDRESS:}
+    from-name: ${SMTP_FROM_NAME:Vigo}
+    connect-timeout-ms: ${SMTP_CONNECT_TIMEOUT_MS:5000}
+    read-timeout-ms: ${SMTP_READ_TIMEOUT_MS:5000}
+    write-timeout-ms: ${SMTP_WRITE_TIMEOUT_MS:5000}
+  logging:
+    vector:
+      enabled: ${LOG_VECTOR_ENABLED:true}
+      destination: ${LOG_VECTOR_DESTINATION:localhost:5044}
+logging:
+  level:
+    root: ${LOG_LEVEL:INFO}
+    org.eclipse.angus.mail: WARN
+  pattern:
+    correlation: "%correlationId"
 management:
   endpoints:
     access:
