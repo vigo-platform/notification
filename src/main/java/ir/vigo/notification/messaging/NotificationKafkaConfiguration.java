@@ -25,7 +25,7 @@ class NotificationKafkaConfiguration {
         EmailDelivery delivery = deliveries.getIfAvailable();
         if (delivery == null) {
             throw new IllegalStateException("Kafka consumption requires an EmailDelivery implementation; "
-                    + "real email delivery is pending SCRUM-112. Disable NOTIFICATION_KAFKA_ENABLED.");
+                    + "enable NOTIFICATION_EMAIL_ENABLED with valid SMTP configuration or disable NOTIFICATION_KAFKA_ENABLED.");
         }
         if (bootstrapServers.isBlank()) {
             throw new IllegalStateException("KAFKA_BOOTSTRAP_SERVERS is required when Kafka consumption is enabled");
