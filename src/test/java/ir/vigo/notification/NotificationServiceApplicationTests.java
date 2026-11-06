@@ -42,7 +42,7 @@ class NotificationServiceApplicationTests {
                 .isEqualTo("vigo-notification-service");
         assertThat(context.getEnvironment().getProperty("spring.jmx.enabled", Boolean.class)).isFalse();
         assertThat(endpoints.getEndpoints()).extracting(endpoint -> endpoint.getEndpointId().toString())
-                .containsExactlyInAnyOrder("health", "info");
+                .containsExactlyInAnyOrder("health", "info", "prometheus");
     }
 
     @Test
@@ -59,8 +59,25 @@ class NotificationServiceApplicationTests {
         assertThat(json.readTree(response.body())).isEqualTo(json.readTree("{}"));
     }
 
+    @Test
+    void discoveryListsExposedEndpoints() throws Exception {
+        var response = request("GET", "/actuator");
+        assertThat(response.statusCode()).isEqualTo(200);
+        var links = json.readTree(response.body()).path("_links");
+        assertThat(links.path("health").path("href").asText()).endsWith("/actuator/health");
+        assertThat(links.path("info").path("href").asText()).endsWith("/actuator/info");
+        assertThat(links.path("prometheus").path("href").asText()).endsWith("/actuator/prometheus");
+    }
+
+    @Test
+    void prometheusExposesJvmMetrics() throws Exception {
+        var response = request("GET", "/actuator/prometheus");
+        assertThat(response.statusCode()).isEqualTo(200);
+        assertThat(response.body()).contains("# TYPE jvm_memory_used_bytes gauge");
+    }
+
     @ParameterizedTest
-    @ValueSource(strings = {"", "/env", "/configprops", "/beans", "/mappings", "/metrics",
+    @ValueSource(strings = {"/env", "/configprops", "/beans", "/mappings", "/metrics",
             "/loggers", "/heapdump", "/threaddump", "/conditions", "/scheduledtasks"})
     void otherManagementRoutesAreUnavailable(String path) throws Exception {
         assertThat(request("GET", "/actuator" + path).statusCode()).isEqualTo(404);

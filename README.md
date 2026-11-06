@@ -58,18 +58,19 @@ Leave `LOG_VECTOR_ENABLED` unset in a shared `.env` to keep the runtime defaults
 
 ### Management endpoints
 
-- `GET /actuator/health`: 200 with `{"status":"UP"}`; details/components hidden.
-- `GET /actuator/info`: 200 with `{}`; info contributors disabled.
-- Other Actuator endpoints and `/actuator` discovery: unavailable.
+- `GET /actuator` lists links to the exposed management endpoints.
+- `GET /actuator/health` returns `{"status":"UP"}` with details and components hidden.
+- `GET /actuator/info` returns `{}` with info contributors disabled.
+- `GET /actuator/prometheus` returns metrics in Prometheus exposition format.
 - JMX is disabled and all Actuator JMX exposure is excluded.
 
-Default endpoint access is denied; only health/info have read-only access and
-HTTP exposure. No authentication or business endpoint is implemented. Health
+Default endpoint access is denied. Health, info and Prometheus have read-only
+HTTP access. No authentication or business endpoint is implemented. Health
 reports the operational application status, not notification delivery capability.
 
 The test suite starts the production configuration on a random port without a
 test profile or infrastructure mocks. It checks startup, endpoint inventory,
-health contents, info, sensitive routes, discovery and management mutations.
+health contents, info, sensitive routes, discovery, Prometheus metrics and management mutations.
 
 ### Docker
 
@@ -81,8 +82,10 @@ UID/GID `10001:10001`. The packaging step skips tests, matching Auth.
 docker build -t vigo-notification-service:local .
 docker run -d --name notification-local --env-file .env -p 127.0.0.1:18080:8080 vigo-notification-service:local
 docker exec notification-local id
+curl --fail http://127.0.0.1:18080/actuator
 curl --fail http://127.0.0.1:18080/actuator/health
 curl --fail http://127.0.0.1:18080/actuator/info
+curl --fail http://127.0.0.1:18080/actuator/prometheus
 curl -i http://127.0.0.1:18080/actuator/env
 docker stop notification-local
 docker rm notification-local

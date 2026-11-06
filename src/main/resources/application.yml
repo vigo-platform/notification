@@ -54,9 +54,9 @@ management:
       default: none
     web:
       exposure:
-        include: health,info
+        include: health,info,prometheus
       discovery:
-        enabled: false
+        enabled: true
     jmx:
       exposure:
         exclude: '*'
@@ -68,6 +68,8 @@ management:
       probes:
         enabled: false
     info:
+      access: read-only
+    prometheus:
       access: read-only
   info:
     defaults:
