@@ -39,6 +39,7 @@ notification:
     read-timeout-ms: ${SMTP_READ_TIMEOUT_MS:5000}
     write-timeout-ms: ${SMTP_WRITE_TIMEOUT_MS:5000}
   logging:
+    console-format: ${LOG_CONSOLE_FORMAT:text}
     vector:
       enabled: ${LOG_VECTOR_ENABLED:true}
       destination: ${LOG_VECTOR_DESTINATION:localhost:5044}

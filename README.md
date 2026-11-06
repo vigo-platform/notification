@@ -46,15 +46,17 @@ trusted proxy, have it replace client-provided forwarded headers with trusted
 values. For direct access, set `SERVER_FORWARD_HEADERS_STRATEGY=none` in the
 process environment.
 
-The console uses Auth's Spring Boot log pattern with structured key/value fields
-and the correlation slot. Outside Docker, Logback also sends JSON events with
+Outside Docker, the console uses Auth's Spring Boot log pattern with structured
+key/value fields and the correlation slot. Logback also sends JSON events with
 `service_name=notification` to Vector at `LOG_VECTOR_DESTINATION` (`localhost:5044`
 by default). Vector forwards them to Elasticsearch. Set `LOG_VECTOR_ENABLED=false`
 for a console-only local run. Set `LOG_LEVEL` to adjust the root log level.
 
-The Docker image defaults to console-only logging and includes `logging=true` and
-`service=notification` labels so the existing Vector Docker source can collect it.
-Leave `LOG_VECTOR_ENABLED` unset in a shared `.env` to keep the runtime defaults.
+The Docker image writes one JSON event per line to stdout using the same Logstash
+encoder as Auth. The existing Vector Docker source selects the container by its
+`logging=true` label and unpacks the JSON fields before indexing in Elasticsearch.
+Leave `LOG_CONSOLE_FORMAT` and `LOG_VECTOR_ENABLED` unset in a shared `.env` to
+keep the runtime defaults.
 
 ### Management endpoints
 
