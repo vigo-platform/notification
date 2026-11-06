@@ -6,11 +6,10 @@ Independent operational service foundation using Java 21 LTS, Spring Boot 4.1.1,
 Maven 3.9.16 and Maven Wrapper tooling 3.3.4 (script-only, matching the API Gateway).
 Package root: `ir.vigo.notification`. Canonical repository: `vigo-platform/notification`.
 
-The servlet/MVC HTTP stack serves management endpoints only.
-Direct dependencies are `spring-boot-starter-kafka`, `spring-boot-starter-webmvc`, `spring-boot-starter-actuator`
-and test-scoped `spring-boot-starter-webmvc-test`, all managed by Boot 4.1.1.
-Boot 4.1.1 does not publish `spring-boot-starter-web-test`; `webmvc-test` is its
-servlet testing starter. No WebFlux dependency is declared.
+The servlet/MVC HTTP stack serves management endpoints only. Spring Boot manages
+the Kafka, WebMVC and Actuator starters and the WebMVC test starter. Structured
+JSON logging uses `logstash-logback-encoder` 8.0, matching Auth. The SMTP client
+uses Jakarta Mail with the Angus provider.
 
 ### Build, test and run
 
@@ -23,7 +22,7 @@ Windows PowerShell:
 
 ```powershell
 .\mvnw.cmd -B -ntp clean verify
-$env:SERVER_PORT = '8080'
+Copy-Item .env.example .env
 java -jar target/vigo-notification-service.jar
 ```
 
@@ -32,12 +31,30 @@ Linux/macOS:
 ```sh
 chmod +x mvnw
 ./mvnw -B -ntp clean verify
-SERVER_PORT=8080 java -jar target/vigo-notification-service.jar
+cp .env.example .env
+java -jar target/vigo-notification-service.jar
 ```
 
-`SERVER_PORT` defaults to `8080`. `.env.example` documents runtime settings. Spring
-Boot does not automatically load `.env` files: set environment variables in your
-shell, or pass a local `.env` to Docker with `--env-file`. Do not commit secrets.
+Set `SERVER_PORT` in the process environment or in the `.env` file in the working
+directory. The default is `8080`. Process environment variables take precedence
+over file values. Docker accepts the same file through `--env-file`.
+
+### Forwarded headers and logging
+
+Like Auth, the HTTP server uses `forward-headers-strategy: framework`. Behind a
+trusted proxy, have it replace client-provided forwarded headers with trusted
+values. For direct access, set `SERVER_FORWARD_HEADERS_STRATEGY=none` in the
+process environment.
+
+The console uses Auth's Spring Boot log pattern with structured key/value fields
+and the correlation slot. Outside Docker, Logback also sends JSON events with
+`service_name=notification` to Vector at `LOG_VECTOR_DESTINATION` (`localhost:5044`
+by default). Vector forwards them to Elasticsearch. Set `LOG_VECTOR_ENABLED=false`
+for a console-only local run. Set `LOG_LEVEL` to adjust the root log level.
+
+The Docker image defaults to console-only logging and includes `logging=true` and
+`service=notification` labels so the existing Vector Docker source can collect it.
+Leave `LOG_VECTOR_ENABLED` unset in a shared `.env` to keep the runtime defaults.
 
 ### Management endpoints
 
@@ -56,15 +73,13 @@ health contents, info, sensitive routes, discovery and management mutations.
 
 ### Docker
 
-Prerequisite: Docker with Linux containers. The multi-stage Dockerfile runs Maven
-verification under a Java 21 JDK and copies the executable JAR into a Java 21 JRE
-image. Both base images are pinned by digest; update those pins deliberately for
-Java/security updates. Runtime UID/GID is `10001:10001`. No probe utilities or
-Docker HEALTHCHECK are added; use external HTTP checks.
+Prerequisite: Docker with Linux containers. The multi-stage Dockerfile packages
+the executable JAR with Maven and Java 21, then runs it in a Java 21 JRE image as
+UID/GID `10001:10001`. The packaging step skips tests, matching Auth.
 
 ```sh
 docker build -t vigo-notification-service:local .
-docker run -d --name notification-local -e SERVER_PORT=18080 -p 127.0.0.1:18080:18080 vigo-notification-service:local
+docker run -d --name notification-local --env-file .env -p 127.0.0.1:18080:8080 vigo-notification-service:local
 docker exec notification-local id
 curl --fail http://127.0.0.1:18080/actuator/health
 curl --fail http://127.0.0.1:18080/actuator/info
@@ -74,23 +89,31 @@ docker rm notification-local
 ```
 
 The last request should return 404. In Windows PowerShell use `curl.exe` for
-these commands. Changing the internal port also requires a matching Docker port
-mapping; Dockerfile `EXPOSE 8080` describes only the default.
+these commands. If you change `SERVER_PORT` in `.env`, update the container port
+in the Docker port mapping.
 
-CI runs on pushes and pull requests with read-only contents permission. Pinned
-GitHub first-party Node 24 actions configure Temurin 21 and Maven caching. CI runs
-Maven clean verify, builds the image, checks non-root startup on an overridden
-port, and always removes its temporary container. It does not publish or deploy.
+The **Docker Build & Push** workflow publishes `logtaha/vigo-notification-service`
+on manual dispatch or a pushed `build-and-push` / `build-and-push-<version>` tag.
+A supplied version is published alongside `latest`. An empty manual tag or a
+plain `build-and-push` tag publishes `sha-<short-sha>`. The workflow uses the
+`DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` repository secrets.
 
-## Kafka command consumer (SCRUM-113)
+## Kafka command consumer and email delivery
 
-The first consumption slice is implemented: `notification.commands` -> strict
-`NotificationRequested` v1 validation -> expiration check -> `EmailDelivery` boundary.
-Real email transport is **not implemented**. Production code defines only the
-`EmailDelivery` interface, with no successful fake or fallback implementation.
-Until SCRUM-112 provides real delivery, enabling Kafka in the normal production
-application intentionally fails startup before listeners start or records are
-consumed. Tests inject their own delivery mocks/implementations.
+The service reads `NotificationRequested` v1 commands from `notification.commands`,
+validates them, and submits an email through the configured SMTP relay. Auth sends
+the OTP and the required command metadata, including the recipient, purpose,
+template ID, locale and expiry. Notification inserts the OTP into the selected
+template and sends UTF-8 HTML with a plain-text alternative.
+
+The four OTP purposes have distinct subjects and text. The default template
+language is Persian with a right-to-left layout. Set the required v1 `data.locale`
+to `fa` for Persian or `en` for English. The copy lives in
+[`mail/otp.properties`](src/main/resources/mail/otp.properties) and
+[`mail/otp_en.properties`](src/main/resources/mail/otp_en.properties). Both use
+[`mail/otp.html`](src/main/resources/mail/otp.html) for the email layout. The
+Persian layout embeds Vazirmatn under the [SIL Open Font License](src/main/resources/mail/fonts/OFL-Vazirmatn.txt)
+and uses system fonts when the mail client omits embedded fonts.
 
 Contract source: [api-contracts PR #1](https://github.com/vigo-platform/api-contracts/pull/1),
 head `7e3a792d97863c75df4a338570ccd81161f6b3a4`,
@@ -104,18 +127,16 @@ are accepted. Purpose/template combinations, six ASCII OTP digits, UUIDs, closed
 objects, mailbox syntax/lengths and UTC timestamps are validated without coercion.
 Duplicate JSON properties and trailing JSON are rejected. Fractions beyond Java's
 nanosecond precision are truncated conservatively, never extending expiry.
-`now >= expires_at` is rejected immediately before the synchronous boundary call.
-A future provider must recheck expiry at actual handoff if it adds work or queuing.
+`now >= expires_at` is rejected before opening a connection and again after the
+SMTP handshake, immediately before submission to the relay.
 
 ### Runtime configuration
 
 - `NOTIFICATION_KAFKA_ENABLED=false` is the safe default. No listener is registered
   and no broker is needed for the management-only operational foundation.
-- Enabling `NOTIFICATION_KAFKA_ENABLED=true` requires an `EmailDelivery` bean;
-  without it, startup fails with an explicit SCRUM-112 dependency message.
-  `KAFKA_BOOTSTRAP_SERVERS` must
-  then contain the environment's broker list; a missing/blank value fails startup.
-  There is no default address or committed credential.
+- When `NOTIFICATION_KAFKA_ENABLED=true`, set `KAFKA_BOOTSTRAP_SERVERS` and the
+  SMTP relay settings before startup. A missing broker address or invalid SMTP
+  configuration fails startup. The first valid command opens the SMTP connection.
 - `KAFKA_CONSUMER_GROUP` defaults to `vigo-notification-service-v1`, a stable,
   non-secret application subscriber identity. Replicas share it; changing it creates
   a separate subscription and may replay commands. Isolate environments at the
@@ -124,10 +145,28 @@ A future provider must recheck expiry at actual handoff if it adds work or queui
 - The explicitly configured offset reset is `earliest` for a group without offsets.
   Existing group offsets take precedence; historical expired commands are rejected.
 
+### External SMTP relay
+
+Set these values in the local `.env` or in the process environment. Docker can
+load them with `--env-file .env`.
+
+| Setting | Value |
+| --- | --- |
+| `SMTP_HOST`, `SMTP_PORT` | Relay hostname and port. The example uses `465` with `TLS`. |
+| `SMTP_SECURITY` | `STARTTLS` requires a TLS upgrade, normally on port `587`. `TLS` connects over TLS immediately, normally on port `465`. `NONE` supports a trusted plaintext relay with authentication disabled. |
+| `SMTP_AUTH` | Defaults to `true`. Set to `false` for a relay that accepts submissions without credentials. |
+| `SMTP_USERNAME`, `SMTP_PASSWORD` | Relay credentials, required when `SMTP_AUTH=true`. |
+| `SMTP_FROM_ADDRESS`, `SMTP_FROM_NAME` | Sender mailbox authorized by the relay and its display name. The example display name is `Vigo`. |
+| `SMTP_CONNECT_TIMEOUT_MS`, `SMTP_READ_TIMEOUT_MS`, `SMTP_WRITE_TIMEOUT_MS` | Positive timeouts in milliseconds. Each defaults to `5000`. |
+
+TLS validates the relay certificate against the JVM trust store and verifies its
+hostname. The service records success when the relay accepts the message. The relay
+handles onward delivery to the mailbox.
+
 ### Acknowledgment, failures and privacy
 
 Auto-commit is disabled and record acknowledgment is explicit configuration.
-Normal returns (delivery boundary accepted, invalid, malformed, unsupported or expired) allow
+Normal returns (SMTP relay accepted, invalid, malformed, unsupported or expired) allow
 the container to commit that record's offset. Rejections are deliberately discarded;
 there is no rejection store, retry or DLQ. A crash before commit can replay a record.
 
@@ -147,7 +186,7 @@ remain framework defaults. Broker reconnect attempts are transport behavior, not
 delivery retry policy. A configured but unreachable broker does not imply immediate
 application startup failure or healthy consumption.
 
-Application logs contain fixed outcome/reason codes only. Payloads, keys, headers,
+Command logs use fixed event, outcome and reason fields. Payloads, keys, headers,
 OTP, destination, template parameters and original exceptions are never logged by
 the adapter; the command model's `toString()` is redacted. Keep Kafka/framework
 payload-level DEBUG/TRACE logging disabled in operation.
@@ -163,7 +202,7 @@ Fast tests exercise validation, all purposes/locales, expiry, boundary invocatio
 duplicates, privacy and enabled/disabled wiring without an external or embedded
 Kafka broker. Existing management endpoint checks remain applicable.
 
-No database/JPA, Redis, SMTP/provider, real email, notification history/read-unread,
+No database/JPA, Redis, notification history/read-unread,
 In-App, WebSocket/SSE, REST business endpoints, JWT/security, durable retry, DLQ,
 service discovery, credentials, Auth producer changes or Gateway changes are included.
 The Kafka starter transitively brings Boot transaction/persistence infrastructure
