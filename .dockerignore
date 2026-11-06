@@ -7,4 +7,3 @@ target
 *.log
 .env
 .env.*
-!.env.example
