@@ -34,6 +34,8 @@ class NotificationServiceApplicationTests {
 
     @Test
     void startsWithProductionConfiguration() {
+        assertThat(context.getBeansOfType(ir.vigo.notification.delivery.EmailDelivery.class)).isEmpty();
+        assertThat(context.getBeansOfType(ir.vigo.notification.messaging.NotificationCommandConsumer.class)).isEmpty();
         assertThat(context.getBean(NotificationServiceApplication.class)).isNotNull();
         assertThat(context.getEnvironment().getActiveProfiles()).isEmpty();
         assertThat(context.getEnvironment().getProperty("spring.application.name"))

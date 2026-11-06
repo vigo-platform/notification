@@ -4,11 +4,10 @@
 
 Independent operational service foundation using Java 21 LTS, Spring Boot 4.1.1,
 Maven 3.9.16 and Maven Wrapper tooling 3.3.4 (script-only, matching the API Gateway).
-Package root: `ir.vigo.notification`. Intended repository: `vigo-platform/vigo-notification-service`.
+Package root: `ir.vigo.notification`. Canonical repository: `vigo-platform/notification`.
 
-The servlet/MVC HTTP stack serves management endpoints only. It does not define
-future notification domain, persistence, messaging or channel implementations.
-Direct dependencies are `spring-boot-starter-webmvc`, `spring-boot-starter-actuator`
+The servlet/MVC HTTP stack serves management endpoints only.
+Direct dependencies are `spring-boot-starter-kafka`, `spring-boot-starter-webmvc`, `spring-boot-starter-actuator`
 and test-scoped `spring-boot-starter-webmvc-test`, all managed by Boot 4.1.1.
 Boot 4.1.1 does not publish `spring-boot-starter-web-test`; `webmvc-test` is its
 servlet testing starter. No WebFlux dependency is declared.
@@ -17,7 +16,7 @@ servlet testing starter. No WebFlux dependency is declared.
 
 Prerequisite: JDK 21; Unix hosts also need unzip for the checksum-pinned ZIP
 distribution. Maven is supplied by the Wrapper. Initial dependency and
-Wrapper downloads require network access; startup and tests require no broker,
+Wrapper downloads require network access; default startup and tests require no broker,
 database, mail server, credentials or other Vigo services.
 
 Windows PowerShell:
@@ -36,7 +35,7 @@ chmod +x mvnw
 SERVER_PORT=8080 java -jar target/vigo-notification-service.jar
 ```
 
-`SERVER_PORT` defaults to `8080`. `.env.example` documents that setting. Spring
+`SERVER_PORT` defaults to `8080`. `.env.example` documents runtime settings. Spring
 Boot does not automatically load `.env` files: set environment variables in your
 shell, or pass a local `.env` to Docker with `--env-file`. Do not commit secrets.
 
@@ -83,41 +82,89 @@ GitHub first-party Node 24 actions configure Temurin 21 and Maven caching. CI ru
 Maven clean verify, builds the image, checks non-root startup on an overridden
 port, and always removes its temporary container. It does not publish or deploy.
 
-## APPROVED PRODUCT DIRECTION
+## Kafka command consumer (SCRUM-113)
 
-IN_APP and EMAIL are approved MVP product channels. PUSH is future work.
-None of these channels is implemented in this foundation slice. Actual channel
-selection remains contract-driven per notification/event.
+The first consumption slice is implemented: `notification.commands` -> strict
+`NotificationRequested` v1 validation -> expiration check -> `EmailDelivery` boundary.
+Real email transport is **not implemented**. Production code defines only the
+`EmailDelivery` interface, with no successful fake or fallback implementation.
+Until SCRUM-112 provides real delivery, enabling Kafka in the normal production
+application intentionally fails startup before listeners start or records are
+consumed. Tests inject their own delivery mocks/implementations.
 
-Auth is the first known producer. The first future vertical slice is Auth OTP ->
-Notification -> EMAIL; it is outside this foundation task (SCRUM-106).
-Backend services will later validate JWT locally using Auth's public
-`/.well-known/jwks.json` endpoint. The API Gateway does not own JWT authorization.
-No Auth integration, JWT validation or JWKS client is implemented here.
+Contract source: [api-contracts PR #1](https://github.com/vigo-platform/api-contracts/pull/1),
+head `7e3a792d97863c75df4a338570ccd81161f6b3a4`,
+`messaging/notification/notification-requested.v1.schema.json` and its README.
+**Do not merge this implementation until the contract PR is approved/merged and
+compatibility with the eventual main contract is rechecked.**
 
-Future selection policy and channel delivery should remain separable; provider
-details should stay outside shared notification policy. These are design
-boundaries, not pre-created interfaces, enums, packages or payload models.
+The Kafka string key must exactly match `event_id`. Only `auth-service`, `EMAIL`,
+the four OTP purposes (login, registration, password change/reset), and `fa`/`en`
+are accepted. Purpose/template combinations, six ASCII OTP digits, UUIDs, closed
+objects, mailbox syntax/lengths and UTC timestamps are validated without coercion.
+Duplicate JSON properties and trailing JSON are rejected. Fractions beyond Java's
+nanosecond precision are truncated conservatively, never extending expiry.
+`now >= expires_at` is rejected immediately before the synchronous boundary call.
+A future provider must recheck expiry at actual handoff if it adds work or queuing.
 
-## UNRESOLVED CONTRACTS
+### Runtime configuration
 
-- Exact notification-producing events, event names and payload schemas; additional
-  producers beyond Auth.
-- Recipient rules and identifier semantics (user, athlete, coach or another identity).
-- Notification history, persistence, read/unread or seen behavior, and retention.
-- Real-time delivery and the frontend Notification REST API.
-- Kafka topic names, partitions, partition keys and consumer groups.
-- Retry behavior, dead-letter handling and idempotency rules.
-- Email provider, sender address/domain, templates and HTML versus plain-text policy.
-- Concrete channel selection rules and their representation.
+- `NOTIFICATION_KAFKA_ENABLED=false` is the safe default. No listener is registered
+  and no broker is needed for the management-only operational foundation.
+- Enabling `NOTIFICATION_KAFKA_ENABLED=true` requires an `EmailDelivery` bean;
+  without it, startup fails with an explicit SCRUM-112 dependency message.
+  `KAFKA_BOOTSTRAP_SERVERS` must
+  then contain the environment's broker list; a missing/blank value fails startup.
+  There is no default address or committed credential.
+- `KAFKA_CONSUMER_GROUP` defaults to `vigo-notification-service-v1`, a stable,
+  non-secret application subscriber identity. Replicas share it; changing it creates
+  a separate subscription and may replay commands. Isolate environments at the
+  broker/group level. Values are supplied at runtime without rebuilding.
+- Provision `notification.commands` externally; topic auto-creation is disabled.
+- The explicitly configured offset reset is `earliest` for a group without offsets.
+  Existing group offsets take precedence; historical expired commands are rejected.
 
-IN_APP does not yet imply storage, polling or real-time delivery. These contracts
-must be approved before their corresponding implementations are introduced.
+### Acknowledgment, failures and privacy
 
-## NOT IMPLEMENTED YET
+Auto-commit is disabled and record acknowledgment is explicit configuration.
+Normal returns (delivery boundary accepted, invalid, malformed, unsupported or expired) allow
+the container to commit that record's offset. Rejections are deliberately discarded;
+there is no rejection store, retry or DLQ. A crash before commit can replay a record.
 
-No notification business endpoints, events, consumers/producers, channel enum,
-dispatcher, sender or recipient interfaces, persistence entities/repositories,
-templates, retry/DLQ/idempotency, or channel delivery exist. No Kafka, database/JPA,
-Redis, SMTP/provider libraries, WebSocket/SSE, PUSH/Firebase, Security/JWT, service
-discovery, Gateway/Auth/User/Workout integration or Docker Compose is included.
+Unexpected processing/delivery failures are logged with a fixed reason, stripped of
+their original message/cause, and propagated. `CommonContainerStoppingErrorHandler`
+replaces Spring Kafka's default retry/recovery handler: it stops the listener
+abnormally instead of retrying or skipping the failed record. Already processed
+record offsets may be committed; the failed record remains for replay after operator
+intervention/restart (subject to broker retention). HTTP management can remain UP
+while consumption is stopped; monitor consumer/container state and failure logs.
+There is no automatic restart, retry policy, transaction or DLQ in this slice.
+See [Spring Kafka error handling](https://docs.spring.io/spring-kafka/reference/kafka/annotation-error-handling.html).
+
+Boot supplies the consumer factory and listener factory. Single-record listeners,
+concurrency one, synchronous commits and Kafka client networking/reconnect behavior
+remain framework defaults. Broker reconnect attempts are transport behavior, not a
+delivery retry policy. A configured but unreachable broker does not imply immediate
+application startup failure or healthy consumption.
+
+Application logs contain fixed outcome/reason codes only. Payloads, keys, headers,
+OTP, destination, template parameters and original exceptions are never logged by
+the adapter; the command model's `toString()` is redacted. Keep Kafka/framework
+payload-level DEBUG/TRACE logging disabled in operation.
+
+At-least-once consumption permits duplicates. Logical identity is `(producer,
+event_id)`; no in-memory guard is used because it would give misleading reliability
+across restarts/replicas. Durable duplicate suppression is deferred. There is no
+exactly-once email guarantee, cancellation, supersession or per-recipient ordering.
+
+### Tests and scope
+
+Fast tests exercise validation, all purposes/locales, expiry, boundary invocation,
+duplicates, privacy and enabled/disabled wiring without an external or embedded
+Kafka broker. Existing management endpoint checks remain applicable.
+
+No database/JPA, Redis, SMTP/provider, real email, notification history/read-unread,
+In-App, WebSocket/SSE, REST business endpoints, JWT/security, durable retry, DLQ,
+service discovery, credentials, Auth producer changes or Gateway changes are included.
+The Kafka starter transitively brings Boot transaction/persistence infrastructure
+and `spring-tx`; this does not configure a database or implement persistence.
