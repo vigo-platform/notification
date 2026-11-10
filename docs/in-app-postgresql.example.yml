@@ -1,0 +1,21 @@
+# Preparation only. NOT imported by the application and NOT a Spring profile.
+# Requires approved DataSource/pool + driver + migration wiring before use.
+# No database/JWT defaults or deployment credentials are supplied here.
+spring:
+  datasource:
+    url: ${NOTIFICATION_DB_URL}
+    username: ${NOTIFICATION_DB_USERNAME}
+    password: ${NOTIFICATION_DB_PASSWORD}
+    hikari:
+      auto-commit: true
+      maximum-pool-size: 5
+      connection-timeout: 5000
+  sql:
+    init:
+      mode: never
+  flyway:
+    enabled: false
+# Migration operator: use inapp/postgresql/V1__create_in_app_notification.sql
+# in an approved service-owned schema. Runtime identity needs only SELECT,
+# INSERT and UPDATE on that table, not DDL. Configure TLS/trust and schema in
+# the approved connection URL; no localhost or insecure transport fallback.

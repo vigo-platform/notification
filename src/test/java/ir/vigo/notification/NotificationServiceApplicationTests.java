@@ -53,6 +53,17 @@ class NotificationServiceApplicationTests {
     }
 
     @Test
+    void inAppRemainsUnexposedUntilAuthContractIsVerified() throws Exception {
+        assertThat(context.getBeansOfType(ir.vigo.notification.inapp.rest.NotificationRestController.class)).isEmpty();
+        assertThat(context.getBeansOfType(ir.vigo.notification.inapp.rest.VerifiedNotificationIdentity.class)).isEmpty();
+        assertThat(context.getBeansOfType(ir.vigo.notification.inapp.JdbcInAppNotifications.class)).isEmpty();
+        assertThat(request("GET", "/api/v1/notification/notifications").statusCode()).isEqualTo(404);
+        assertThat(request("GET", "/api/v1/notification/notifications/unread-count").statusCode()).isEqualTo(404);
+        assertThat(request("PATCH", "/api/v1/notification/notifications/00000000-0000-0000-0000-000000000001/read")
+                .statusCode()).isEqualTo(404);
+    }
+
+    @Test
     void infoIsAvailableWithoutMetadata() throws Exception {
         var response = request("GET", "/actuator/info");
         assertThat(response.statusCode()).isEqualTo(200);
