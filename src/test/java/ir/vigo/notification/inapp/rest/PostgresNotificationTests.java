@@ -57,6 +57,41 @@ class PostgresNotificationTests {
     }
 
     @Test
+    void verifiedBearerTokensEnforceCrossUserIsolationOnPostgres() throws Exception {
+        var key = new com.nimbusds.jose.jwk.gen.RSAKeyGenerator(2048).keyID("postgres-test").generate();
+        var identity = new JwtNotificationIdentity(new TrustedJwks(
+                () -> new com.nimbusds.jose.jwk.JWKSet(key.toPublicJWK()).toString(), clock),
+                "test-issuer", "test-api", clock);
+        var secured = NotificationRestAssembly.prepareSecured(source, clock, identity);
+        var mvc = MockMvcBuilders.standaloneSetup(secured.controller()).addFilters(secured.filter()).build();
+        var notification = store.create("42", "Private title", "Private body");
+        String root = "/api/v1/notification/notifications";
+        for (String owner : java.util.List.of("43", "42")) {
+            var jwt = new com.nimbusds.jwt.SignedJWT(new com.nimbusds.jose.JWSHeader.Builder(com.nimbusds.jose.JWSAlgorithm.RS256)
+                    .keyID("postgres-test").type(new com.nimbusds.jose.JOSEObjectType("at+jwt")).build(),
+                    new com.nimbusds.jwt.JWTClaimsSet.Builder().issuer("test-issuer").audience("test-api")
+                            .subject(owner).claim("token_use", "access").issueTime(java.util.Date.from(clock.instant()))
+                            .notBeforeTime(java.util.Date.from(clock.instant()))
+                            .expirationTime(java.util.Date.from(clock.instant().plusSeconds(60))).build());
+            jwt.sign(new com.nimbusds.jose.crypto.RSASSASigner(key));
+            String bearer = "Bearer " + jwt.serialize();
+            boolean own = owner.equals("42");
+            mvc.perform(get(root).header("Authorization", bearer).header("X-User-Id", "42").param("owner_id", "42"))
+                    .andExpect(status().isOk()).andExpect(jsonPath("$.data.items.length()").value(own ? 1 : 0));
+            mvc.perform(get(root + "/unread-count").header("Authorization", bearer))
+                    .andExpect(status().isOk()).andExpect(jsonPath("$.data.unread_count").value(own ? 1 : 0));
+            mvc.perform(patch(root + "/" + notification.id() + "/read").header("Authorization", bearer))
+                    .andExpect(status().is(own ? 200 : 404));
+            if (!own) {
+                mvc.perform(patch(root + "/" + UUID.randomUUID() + "/read").header("Authorization", bearer))
+                        .andExpect(status().isNotFound()).andExpect(jsonPath("$.code").value("NOTIFICATION_NOT_FOUND"));
+                assertThat(store.unreadCount("42")).isEqualTo(1);
+            }
+        }
+        assertThat(store.unreadCount("42")).isZero();
+    }
+
+    @Test
     void postgresPersistsOrdersPaginatesAndSeparatesCaseSensitiveOwners() {
         var first = store.create("test-a", "First", "Test body");
         store.create("test-A", "Other case", "Test body");
