@@ -4,11 +4,13 @@
 
 An isolated JDBC component now supports persisted user-addressed notifications,
 owner-scoped pagination/unread counts and idempotent mark-read. It is not wired
-into application startup, HTTP or Kafka. Auth token verification and runtime
+into application startup, HTTP or Kafka. Runtime Auth configuration and
 database/ingestion agreements remain blockers to a usable IN_APP MVP. See
 [implementation status and approved REST proposal](docs/in-app-mvp.md).
-The prepared REST controller is hard-disabled pending Auth verification, with
-test-only authenticated principals. DTOs, examples and the PostgreSQL migration
+The prepared REST controller remains hard-disabled pending runtime database and
+authentication configuration. Service-owned RS256/JWKS verification and secure
+bearer assembly are implemented; see [security integration](docs/in-app-jwt-integration.md).
+DTOs, examples and the PostgreSQL migration
 are described in [REST preparation](docs/in-app-rest-preparation.md).
 H2 and PostgreSQL drivers are test-only dependencies for persistence verification. Existing
 EMAIL/OTP configuration and delivery behavior are unchanged. Historical scope
