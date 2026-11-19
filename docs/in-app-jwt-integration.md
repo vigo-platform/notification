@@ -1,5 +1,9 @@
 # IN_APP JWT integration — 2026-11-18
 
+Historical checkpoint. For the subsequent opt-in runtime and automatic migrations,
+see [IN_APP runtime](in-app-runtime.md). The hard-disable described below was replaced
+by validated runtime assembly; disabled-by-default behavior remains.
+
 REST remains hard-disabled. This update implements and tests the authentication
 boundary, but does not register production routes, a filter, a datasource or a
 migration runner. Environment variables alone cannot enable REST.

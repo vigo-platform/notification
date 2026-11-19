@@ -24,6 +24,8 @@ spring:
     admin:
       auto-create: false
 notification:
+  in-app:
+    enabled: ${NOTIFICATION_IN_APP_ENABLED:false}
   kafka:
     enabled: ${NOTIFICATION_KAFKA_ENABLED:false}
   smtp:

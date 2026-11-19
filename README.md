@@ -1,20 +1,17 @@
 # Vigo Notification Service
 
-## IN_APP persistence slice (not exposed)
+## IN_APP REST (opt-in)
 
-An isolated JDBC component now supports persisted user-addressed notifications,
-owner-scoped pagination/unread counts and idempotent mark-read. It is not wired
-into application startup, HTTP or Kafka. Runtime Auth configuration and
-database/ingestion agreements remain blockers to a usable IN_APP MVP. See
-[implementation status and approved REST proposal](docs/in-app-mvp.md).
-The prepared REST controller remains hard-disabled pending runtime database and
-authentication configuration. Service-owned RS256/JWKS verification and secure
-bearer assembly are implemented; see [security integration](docs/in-app-jwt-integration.md).
-DTOs, examples and the PostgreSQL migration
-are described in [REST preparation](docs/in-app-rest-preparation.md).
-H2 and PostgreSQL drivers are test-only dependencies for persistence verification. Existing
-EMAIL/OTP configuration and delivery behavior are unchanged. Historical scope
-statements below describe the original foundation and EMAIL slices.
+`NOTIFICATION_IN_APP_ENABLED=true` activates the existing owner-scoped list,
+unread-count and mark-read API with service-owned JWT/JWKS authentication.
+Required DB/Auth settings validate at startup; Flyway migrates the configured
+schema before serving requests. A bounded Hikari pool and PostgreSQL driver are
+included. Disabled startup requires no DB/Auth settings and exposes no IN_APP routes.
+See [runtime configuration and verification](docs/in-app-runtime.md).
+
+There is no IN_APP ingestion or Kafka v2 implementation in this change. Existing
+EMAIL/OTP/Kafka/SMTP behavior is preserved. Earlier preparation reports and scope
+statements below describe historical checkpoints.
 
 ## APPROVED FOUNDATION
 

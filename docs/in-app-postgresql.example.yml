@@ -1,21 +1,15 @@
-# Preparation only. NOT imported by the application and NOT a Spring profile.
-# Requires approved DataSource/pool + driver + migration wiring before use.
-# No database/JWT defaults or deployment credentials are supplied here.
-spring:
-  datasource:
-    url: ${NOTIFICATION_DB_URL}
-    username: ${NOTIFICATION_DB_USERNAME}
-    password: ${NOTIFICATION_DB_PASSWORD}
-    hikari:
-      auto-commit: true
-      maximum-pool-size: 5
-      connection-timeout: 5000
-  sql:
-    init:
-      mode: never
-  flyway:
-    enabled: false
-# Migration operator: use inapp/postgresql/V1__create_in_app_notification.sql
-# in an approved service-owned schema. Runtime identity needs only SELECT,
-# INSERT and UPDATE on that table, not DDL. Configure TLS/trust and schema in
-# the approved connection URL; no localhost or insecure transport fallback.
+# Documentation only; NOT auto-imported. See in-app-runtime.md and .env.example.
+# Runtime explicitly owns Hikari/Flyway rather than spring.datasource auto-config.
+notification:
+  in-app:
+    enabled: ${NOTIFICATION_IN_APP_ENABLED:false}
+# Required environment when enabled:
+# NOTIFICATION_DB_URL, NOTIFICATION_DB_USERNAME, NOTIFICATION_DB_PASSWORD,
+# NOTIFICATION_DB_SCHEMA, NOTIFICATION_JWT_JWKS_URL,
+# NOTIFICATION_JWT_ISSUER, NOTIFICATION_JWT_AUDIENCE.
+# Schema must already exist. Disposable development uses public in a dedicated DB.
+# Automatic Flyway location: classpath:inapp/postgresql (existing V1 only).
+# No baseline, repair, clean or schema creation. Startup principal requires migration
+# DDL privileges in its schema plus runtime SELECT/INSERT/UPDATE and schema USAGE.
+# Pool: max 5, min idle 0, auto-commit, 5s acquire / 2s validation timeout.
+# PostgreSQL URL must explicitly use verify-full TLS, except loopback-only disable.

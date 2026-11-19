@@ -4,10 +4,7 @@ import java.time.Clock;
 import java.util.List;
 import java.util.Objects;
 import jakarta.servlet.http.HttpServletRequest;
-import org.springframework.context.annotation.Conditional;
-import org.springframework.context.annotation.Condition;
-import org.springframework.context.annotation.ConditionContext;
-import org.springframework.core.type.AnnotatedTypeMetadata;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -18,7 +15,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 @RequestMapping("/api/v1/notification/notifications")
-@Conditional(NotificationRestController.AuthContractPending.class)
+@ConditionalOnProperty(name = "notification.in-app.enabled", havingValue = "true")
 public final class NotificationRestController {
     private final NotificationRestService service;
     private final Clock clock;
@@ -26,13 +23,6 @@ public final class NotificationRestController {
     public NotificationRestController(NotificationRestService service, Clock clock) {
         this.service = Objects.requireNonNull(service);
         this.clock = Objects.requireNonNull(clock);
-    }
-
-    /** Hard gate: no environment variable/profile can enable an unverified HTTP API. */
-    public static final class AuthContractPending implements Condition {
-        @Override public boolean matches(ConditionContext context, AnnotatedTypeMetadata metadata) {
-            return false;
-        }
     }
 
     @GetMapping

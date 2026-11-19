@@ -1,5 +1,8 @@
 # IN_APP REST preparation — 2026-11-10
 
+Historical preparation report. Current activation/configuration is documented in
+[IN_APP runtime](in-app-runtime.md); the original hard gate below is no longer current.
+
 Continues the existing local persistence changes on
 `feature/notification-email-smtp-v1` at
 `742668bea66816981a19f301afee6af353aadae5`. No commit, push, merge or deployment.
@@ -166,11 +169,10 @@ are explicitly skipped, so ordinary regression runs need no database.
 Example disposable setup (never use production credentials):
 
 ```powershell
-docker run --detach --rm --name vigo-notification-rest-test --publish 127.0.0.1::5432 --env POSTGRES_DB=notification_test --env POSTGRES_USER=notification_test --env POSTGRES_PASSWORD=notification_test_only postgres:16-alpine
-docker port vigo-notification-rest-test 5432/tcp
-# After pg_isready succeeds, replace PORT with the reported port:
-.\mvnw.cmd -B -ntp '-Dnotification.test.postgres.port=PORT' verify
-docker stop vigo-notification-rest-test
+.\scripts\verify-disposable-postgres.ps1 -MavenCommand mvn
+# Creates a new container and random test database, provisions an external
+# fixture identity, runs verification, and removes only that container.
+# Port-only invocation is no longer supported; see in-app-runtime.md.
 ```
 
 The installed Maven 3.9.16 executable was used directly in this environment because

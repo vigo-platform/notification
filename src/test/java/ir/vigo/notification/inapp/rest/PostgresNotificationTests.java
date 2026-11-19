@@ -16,7 +16,6 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
-import org.postgresql.ds.PGSimpleDataSource;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 import static org.assertj.core.api.Assertions.*;
@@ -26,33 +25,41 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 /** Opt-in, disposable local PostgreSQL only; cannot target an arbitrary database/host. */
 @EnabledIfSystemProperty(named = "notification.test.postgres.port", matches = "[0-9]+")
 class PostgresNotificationTests {
-    private final PGSimpleDataSource source = new PGSimpleDataSource();
-    private final String schema = "notification_test_" + UUID.randomUUID().toString().replace("-", "");
+    private DisposablePostgresFixture fixture;
     private final Clock clock = Clock.fixed(Instant.parse("2026-11-10T08:00:00Z"), ZoneOffset.UTC);
     private JdbcInAppNotifications store;
 
     @BeforeEach
     void migrate() throws Exception {
-        source.setServerNames(new String[] {"127.0.0.1"});
-        source.setPortNumbers(new int[] {Integer.parseInt(System.getProperty("notification.test.postgres.port"))});
-        source.setDatabaseName("notification_test");
-        source.setUser("notification_test");
-        source.setPassword("notification_test_only");
-        try (var connection = source.getConnection(); var statement = connection.createStatement()) {
-            statement.execute("CREATE SCHEMA " + schema);
-        }
-        source.setCurrentSchema(schema);
-        try (var connection = source.getConnection(); var reader = new InputStreamReader(
+        fixture = new DisposablePostgresFixture();
+        fixture.create();
+        try (var connection = fixture.connection(); var reader = new InputStreamReader(
                 getClass().getResourceAsStream("/inapp/postgresql/V1__create_in_app_notification.sql"), StandardCharsets.UTF_8)) {
             RunScript.execute(connection, reader);
         }
-        store = new JdbcInAppNotifications(source, clock);
+        store = new JdbcInAppNotifications(fixture.source, clock);
     }
 
     @AfterEach
     void removeOnlyGeneratedTestSchema() throws Exception {
-        try (var connection = source.getConnection(); var statement = connection.createStatement()) {
-            statement.execute("DROP SCHEMA IF EXISTS " + schema + " CASCADE");
+        if (fixture != null) fixture.close();
+    }
+
+    @Test
+    void wrongExternalIdentityCannotCreateOrCleanSchema() throws Exception {
+        String expected = System.getProperty("notification.test.postgres.identity");
+        DisposablePostgresFixture rejected;
+        try {
+            System.setProperty("notification.test.postgres.identity", "0".repeat(32));
+            rejected = new DisposablePostgresFixture();
+        } finally { System.setProperty("notification.test.postgres.identity", expected); }
+        assertThatThrownBy(rejected::create).isInstanceOf(java.sql.SQLException.class)
+                .hasMessageContaining("fixture identity mismatch");
+        rejected.close(); // Failed setup must not try cleanup DDL.
+        try (var connection = fixture.connection(); var statement = connection.prepareStatement(
+                "SELECT count(*) FROM pg_namespace WHERE nspname = ?")) {
+            statement.setString(1, rejected.schema);
+            try (var rows = statement.executeQuery()) { rows.next(); assertThat(rows.getInt(1)).isZero(); }
         }
     }
 
@@ -62,7 +69,7 @@ class PostgresNotificationTests {
         var identity = new JwtNotificationIdentity(new TrustedJwks(
                 () -> new com.nimbusds.jose.jwk.JWKSet(key.toPublicJWK()).toString(), clock),
                 "test-issuer", "test-api", clock);
-        var secured = NotificationRestAssembly.prepareSecured(source, clock, identity);
+        var secured = NotificationRestAssembly.prepareSecured(fixture.source, clock, identity);
         var mvc = MockMvcBuilders.standaloneSetup(secured.controller()).addFilters(secured.filter()).build();
         var notification = store.create("42", "Private title", "Private body");
         String root = "/api/v1/notification/notifications";
@@ -95,9 +102,9 @@ class PostgresNotificationTests {
     void postgresPersistsOrdersPaginatesAndSeparatesCaseSensitiveOwners() {
         var first = store.create("test-a", "First", "Test body");
         store.create("test-A", "Other case", "Test body");
-        var second = new JdbcInAppNotifications(source, Clock.offset(clock, java.time.Duration.ofSeconds(1)))
+        var second = new JdbcInAppNotifications(fixture.source, Clock.offset(clock, java.time.Duration.ofSeconds(1)))
                 .create("test-a", "Second", "Test body");
-        var reopened = new JdbcInAppNotifications(source, clock);
+        var reopened = new JdbcInAppNotifications(fixture.source, clock);
         assertThat(reopened.list("test-a", 0, 1)).containsExactly(second);
         assertThat(reopened.list("test-a", 1, 1)).containsExactly(first);
         assertThat(reopened.unreadCount("test-a")).isEqualTo(2);
@@ -129,7 +136,7 @@ class PostgresNotificationTests {
             if (principal == b) return "test-b";
             throw new VerifiedNotificationIdentity.Unauthorized();
         };
-        var mvc = MockMvcBuilders.standaloneSetup(NotificationRestAssembly.prepare(source, clock, identity)).build();
+        var mvc = MockMvcBuilders.standaloneSetup(NotificationRestAssembly.prepare(fixture.source, clock, identity)).build();
         var notification = store.create("test-b", "Title", "Body");
         String root = "/api/v1/notification/notifications";
         mvc.perform(get(root).principal(a)).andExpect(status().isOk()).andExpect(jsonPath("$.data.items").isEmpty());
