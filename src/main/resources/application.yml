@@ -33,6 +33,8 @@ spring:
     admin:
       auto-create: false
 notification:
+  in-app:
+    enabled: ${NOTIFICATION_IN_APP_ENABLED:false}
   email:
     enabled: ${NOTIFICATION_EMAIL_ENABLED:false}
     from-address: ${SMTP_FROM_ADDRESS:}
