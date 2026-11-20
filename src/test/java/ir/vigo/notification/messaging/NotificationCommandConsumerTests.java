@@ -7,6 +7,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Stream;
 
+import ir.vigo.notification.delivery.SmtpFailure;
 import ir.vigo.notification.messaging.model.NotificationRequested;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.junit.jupiter.api.Test;
@@ -23,6 +24,8 @@ import tools.jackson.databind.node.ObjectNode;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 @ExtendWith(OutputCaptureExtension.class)
 class NotificationCommandConsumerTests {
@@ -165,13 +168,29 @@ class NotificationCommandConsumerTests {
     }
 
     @Test
+    void expiredDuringBackoffSkipsSubmissionOnRedelivery(CapturedOutput output) {
+        Clock advancing = mock(Clock.class);
+        when(advancing.instant()).thenReturn(clock.instant(), Instant.parse("2026-01-01T12:03:00Z"));
+        var listener = new NotificationCommandConsumer(request -> {
+            delivered.add(request);
+            throw new SmtpFailure(SmtpFailure.Reason.CONNECTION_FAILED);
+        }, advancing);
+        var command = record(KEY, VALID);
+        assertThatThrownBy(() -> listener.consume(command)).isInstanceOf(SmtpFailure.class);
+        listener.consume(command);
+        assertThat(delivered).hasSize(1);
+        assertThat(output.getAll()).contains("CONNECTION_FAILED", "EXPIRED")
+                .doesNotContain("BOUNDARY_ACCEPTED", OTP, DESTINATION);
+    }
+
+    @Test
     void boundaryFailureIsSurfacedWithoutSensitiveExceptionCause(CapturedOutput output) {
         var failing = new NotificationCommandConsumer(request -> {
             throw new IllegalStateException(OTP + " " + DESTINATION);
         }, clock);
         assertThatThrownBy(() -> failing.consume(record(KEY, VALID)))
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessage("Notification processing failed; consumer must stop").hasNoCause();
+                .hasMessage("Notification processing failed").hasNoCause();
         assertThat(output.getAll()).contains("PROCESSING_FAILURE")
                 .doesNotContain("BOUNDARY_ACCEPTED", OTP, DESTINATION);
     }

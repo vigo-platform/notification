@@ -6,13 +6,17 @@ import java.time.Clock;
 import java.util.Properties;
 
 import ir.vigo.notification.messaging.model.NotificationRequested;
+import jakarta.mail.AuthenticationFailedException;
 import jakarta.mail.Message;
 import jakarta.mail.MessagingException;
 import jakarta.mail.Session;
+import jakarta.mail.Transport;
 import jakarta.mail.internet.InternetAddress;
 import jakarta.mail.internet.MimeBodyPart;
 import jakarta.mail.internet.MimeMessage;
 import jakarta.mail.internet.MimeMultipart;
+import org.eclipse.angus.mail.smtp.SMTPAddressFailedException;
+import org.eclipse.angus.mail.smtp.SMTPSendFailedException;
 
 final class SmtpEmailDelivery implements EmailDelivery {
     private static final String UTF_8 = StandardCharsets.UTF_8.name();
@@ -46,13 +50,16 @@ final class SmtpEmailDelivery implements EmailDelivery {
             MimeMessage email = createEmail(request);
             var transport = session.getTransport("smtp");
             try {
-                transport.connect(settings.host(), settings.port(), settings.auth() ? settings.username() : null,
-                        settings.auth() ? settings.password() : null);
+                connect(transport);
                 if (expired(request)) {
                     return false;
                 }
-                transport.sendMessage(email, email.getAllRecipients());
-                return true;
+                try {
+                    transport.sendMessage(email, email.getAllRecipients());
+                    return true;
+                } catch (MessagingException e) {
+                    throw submissionFailure(e);
+                }
             } finally {
                 try {
                     transport.close();
@@ -63,6 +70,38 @@ final class SmtpEmailDelivery implements EmailDelivery {
         } catch (MessagingException | UnsupportedEncodingException ignored) {
             throw new IllegalStateException("SMTP email delivery failed");
         }
+    }
+
+    private void connect(Transport transport) {
+        try {
+            transport.connect(settings.host(), settings.port(), settings.auth() ? settings.username() : null,
+                    settings.auth() ? settings.password() : null);
+        } catch (AuthenticationFailedException e) {
+            throw new SmtpFailure(SmtpFailure.Reason.AUTH_FAILED);
+        } catch (MessagingException e) {
+            throw new SmtpFailure(SmtpFailure.Reason.CONNECTION_FAILED);
+        }
+    }
+
+    private static SmtpFailure submissionFailure(MessagingException failure) {
+        for (Throwable cause = failure; cause != null; cause = cause.getCause()) {
+            int code;
+            if (cause instanceof SMTPSendFailedException send) {
+                code = send.getReturnCode();
+            } else if (cause instanceof SMTPAddressFailedException recipient) {
+                code = recipient.getReturnCode();
+            } else {
+                continue;
+            }
+            if (code >= 400 && code < 500) {
+                return new SmtpFailure(SmtpFailure.Reason.TEMPORARY_REJECTION);
+            }
+            if (code >= 500 && code < 600) {
+                return new SmtpFailure(SmtpFailure.Reason.PERMANENT_REJECTION);
+            }
+        }
+        // The relay may have accepted DATA before the connection was lost.
+        return new SmtpFailure(SmtpFailure.Reason.ACCEPTANCE_UNKNOWN);
     }
 
     private MimeMessage createEmail(NotificationRequested request) throws MessagingException, UnsupportedEncodingException {

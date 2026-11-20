@@ -22,7 +22,7 @@ import jakarta.mail.internet.MimeMessage;
 import jakarta.mail.internet.MimeMultipart;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.ValueSource;
+import org.junit.jupiter.params.provider.CsvSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -35,18 +35,18 @@ class SmtpEmailDeliveryTests {
     private static final String OTP = "012345";
 
     @ParameterizedTest
-    @ValueSource(booleans = {true, false})
-    void reportsActualRelayAcceptanceOrSanitizedFailure(boolean accepted) throws Exception {
+    @CsvSource({"250,ACCEPTED", "451,TEMPORARY_REJECTION", "550,PERMANENT_REJECTION", "0,ACCEPTANCE_UNKNOWN"})
+    void reportsActualRelayAcceptanceOrSanitizedFailure(int response, String outcome) throws Exception {
         try (var executor = Executors.newVirtualThreadPerTaskExecutor(); var relay = loopbackRelay()) {
             var received = executor.submit(() -> exchange(relay, false,
-                    accepted ? "250 accepted" : "550 rejected " + RECIPIENT + " " + OTP));
+                    response == 0 ? null : response + " relay response " + RECIPIENT + " " + OTP));
             var delivery = delivery(relay, Clock.fixed(NOW, ZoneOffset.UTC));
-            if (accepted) {
+            if (response == 250) {
                 assertThat(delivery.deliver(request())).isTrue();
             } else {
                 assertThatThrownBy(() -> delivery.deliver(request()))
-                        .isInstanceOf(IllegalStateException.class)
-                        .hasMessage("SMTP email delivery failed").hasNoCause();
+                        .isInstanceOf(SmtpFailure.class)
+                        .hasMessage(outcome).hasNoCause();
             }
 
             var wireMessage = received.get(5, TimeUnit.SECONDS);
@@ -59,6 +59,22 @@ class SmtpEmailDeliveryTests {
             var content = (MimeMultipart) message.getContent();
             assertThat(content.getBodyPart(0).getContent().toString()).contains(OTP);
             assertThat(content.getBodyPart(1).getContent().toString()).contains("dir=\"rtl\"", OTP);
+        }
+    }
+
+    @Test
+    void relayUnavailableDuringConnectIsSafeToRetry() throws Exception {
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor(); var relay = loopbackRelay()) {
+            var greeting = executor.submit(() -> {
+                try (var socket = relay.accept()) {
+                    var output = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream(), StandardCharsets.US_ASCII));
+                    reply(output, "421 temporarily unavailable");
+                }
+                return true;
+            });
+            assertThatThrownBy(() -> delivery(relay, Clock.fixed(NOW, ZoneOffset.UTC)).deliver(request()))
+                    .isInstanceOf(SmtpFailure.class).hasMessage("CONNECTION_FAILED").hasNoCause();
+            assertThat(greeting.get(5, TimeUnit.SECONDS)).isTrue();
         }
     }
 
@@ -111,7 +127,7 @@ class SmtpEmailDeliveryTests {
             var message = new StringBuilder();
             for (String line = input.readLine(); line != null; line = input.readLine()) {
                 if (line.equals(".")) {
-                    reply(output, result);
+                    if (result != null) reply(output, result);
                     return message.toString();
                 }
                 message.append(line.startsWith("..") ? line.substring(1) : line).append("\r\n");

@@ -337,8 +337,14 @@ class NotificationRestRuntimeHttpTests {
                     restarted.getBean(SyntheticV1Sink.class).failDelivery = true;
                     String failedOtp = UUID.randomUUID().toString();
                     publish(producer, v1Topic, failedOtp, v1Otp(failedOtp));
-                    await(() -> !v1Container.isRunning(), "v1 consumer stops after delivery fails");
-                    assertThat(offset(admin, v1Group, v1Partition)).isEqualTo(3);
+                    awaitOffset(admin, v1Group, v1Partition, 4);
+                    assertThat(v1Container.isRunning()).isTrue();
+                    var sink = restarted.getBean(SyntheticV1Sink.class);
+                    sink.failDelivery = false;
+                    String freshOtp = UUID.randomUUID().toString();
+                    publish(producer, v1Topic, freshOtp, v1Otp(freshOtp));
+                    awaitOffset(admin, v1Group, v1Partition, 5);
+                    assertThat(sink.deliveries.get()).isEqualTo(1);
                 }
             }
         }

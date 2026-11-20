@@ -75,14 +75,15 @@ keep the runtime defaults.
 ### Management endpoints
 
 - `GET /actuator` lists links to the exposed management endpoints.
-- `GET /actuator/health` returns `{"status":"UP"}` with details and components hidden.
+- `GET /actuator/health` returns the aggregate status with details and components hidden.
 - `GET /actuator/info` returns `{}` with info contributors disabled.
 - `GET /actuator/prometheus` returns metrics in Prometheus exposition format.
 - JMX is disabled and all Actuator JMX exposure is excluded.
 
 Default endpoint access is denied. Health, info and Prometheus have read-only
-HTTP access. IN_APP routes require bearer authentication when enabled. Health
-reports the operational application status, not notification delivery capability.
+HTTP access. IN_APP routes require bearer authentication when enabled. With v1 enabled,
+health reports DOWN if the OTP listener stops. This check observes the listener
+lifecycle. Relay acceptance and Kafka lag are separate delivery signals.
 
 The test suite starts the production configuration on a random port without a
 test profile or infrastructure mocks. It checks startup, endpoint inventory,
@@ -184,26 +185,41 @@ handles onward delivery to the mailbox.
 
 ### Acknowledgment, failures and privacy
 
-Auto-commit is disabled and record acknowledgment is explicit configuration.
-Normal returns (SMTP relay accepted, invalid, malformed, unsupported or expired) allow
-the container to commit that record's offset. Rejections are deliberately discarded;
-there is no rejection store, retry or DLQ. A crash before commit can replay a record.
+V1 polls one command at a time and uses record acknowledgments with auto-commit
+disabled. It checks expiry on every delivery attempt and again after SMTP connects.
+Invalid and expired commands are acknowledged and skipped.
 
-Unexpected processing/delivery failures are logged with a fixed reason, stripped of
-their original message/cause, and propagated. `CommonContainerStoppingErrorHandler`
-replaces Spring Kafka's default retry/recovery handler: it stops the listener
-abnormally instead of retrying or skipping the failed record. Already processed
-record offsets may be committed; the failed record remains for replay after operator
-intervention/restart (subject to broker retention). HTTP management can remain UP
-while consumption is stopped; monitor consumer/container state and failure logs.
-There is no automatic restart, retry policy, transaction or DLQ in this slice.
-See [Spring Kafka error handling](https://docs.spring.io/spring-kafka/reference/kafka/annotation-error-handling.html).
+A connection failure or an explicit temporary SMTP rejection (4xx during submission)
+gets up to two retries with a one-second backoff. Unexpected processing exceptions
+use the same limit. If all three attempts fail, the consumer logs
+`notification_command_exhausted` with partition and offset, acknowledges the record
+and continues. A permanent submission rejection (5xx), failed authentication, or
+unconfirmed submission (for example a lost final DATA reply) ends that command
+immediately. A new OTP request can be processed as soon as the relay is available.
+Terminal failures have no automatic redelivery or dead-letter copy of the OTP.
 
-Boot supplies the consumer factory and listener factory. Single-record listeners,
-concurrency one, synchronous commits and Kafka client networking/reconnect behavior
-remain framework defaults. Broker reconnect attempts are transport behavior, not a
-delivery retry policy. A configured but unreachable broker does not imply immediate
-application startup failure or healthy consumption.
+Monitor `notification_command_failed` for the fixed failure reason and
+`notification_command_exhausted` for the last unsuccessful retry. Errors outside
+record processing leave offsets alone. Poll errors back off before another poll,
+and Kafka authentication/authorization failures retry at ten-second intervals.
+A running listener can still be waiting for the broker or relay.
+
+For v1, match `partition` and `offset` across command events on
+`notification.commands`. A retry event gives the failed and next attempt numbers
+and the backoff in milliseconds. Attempt numbering is local to the current retry
+cycle and may start again after a restart or reassignment. A later
+`notification_command_accepted` for the same record confirms relay acceptance.
+An `EXPIRED` rejection during retry ends the command.
+`notification_consumer_started` marks listener startup.
+`notification_consumer_stopped` includes the Kafka lifecycle reason, including
+`NORMAL` on an orderly shutdown.
+
+For the Docker JSON console, follow the last 30 minutes and new events with:
+
+```sh
+docker compose logs --since 30m -f --no-color --no-log-prefix notification |
+  jq -Rc --unbuffered 'fromjson? | select((.event // "") | startswith("notification_")) | {time: .["@timestamp"], event, partition, offset, outcome, reason, failed_attempt, next_attempt, backoff_ms} | with_entries(select(.value != null))'
+```
 
 Command logs use fixed event, outcome and reason fields. Payloads, keys, headers,
 OTP, destination, template parameters and original exceptions are never logged by

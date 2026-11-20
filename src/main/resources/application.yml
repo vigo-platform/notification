@@ -14,6 +14,7 @@ spring:
     consumer:
       group-id: ${KAFKA_CONSUMER_GROUP:vigo-notification-service-v1}
       enable-auto-commit: false
+      max-poll-records: 1
       auto-offset-reset: earliest
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
@@ -21,6 +22,7 @@ spring:
         allow.auto.create.topics: false
     listener:
       ack-mode: record
+      auth-exception-retry-interval: 10s
     admin:
       auto-create: false
 notification:
