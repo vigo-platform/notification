@@ -81,7 +81,7 @@ keep the runtime defaults.
 - JMX is disabled and all Actuator JMX exposure is excluded.
 
 Default endpoint access is denied. Health, info and Prometheus have read-only
-HTTP access. No authentication or business endpoint is implemented. Health
+HTTP access. IN_APP routes require bearer authentication when enabled. Health
 reports the operational application status, not notification delivery capability.
 
 The test suite starts the production configuration on a random port without a

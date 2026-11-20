@@ -5,7 +5,9 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import javax.sql.DataSource;
 
+import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -53,10 +55,14 @@ class NotificationServiceApplicationTests {
     }
 
     @Test
-    void inAppRemainsUnexposedUntilAuthContractIsVerified() throws Exception {
+    void inAppAndKafkaV2AreDisabledByDefault() throws Exception {
         assertThat(context.getBeansOfType(ir.vigo.notification.inapp.rest.NotificationRestController.class)).isEmpty();
         assertThat(context.getBeansOfType(ir.vigo.notification.inapp.rest.VerifiedNotificationIdentity.class)).isEmpty();
         assertThat(context.getBeansOfType(ir.vigo.notification.inapp.JdbcInAppNotifications.class)).isEmpty();
+        assertThat(context.getBeansOfType(DataSource.class)).isEmpty();
+        assertThat(context.getBeansOfType(Flyway.class)).isEmpty();
+        assertThat(context.containsBean("notificationV2Container")).isFalse();
+        assertThat(context.containsBean("notificationV2Inbox")).isFalse();
         assertThat(request("GET", "/api/v1/notification/notifications").statusCode()).isEqualTo(404);
         assertThat(request("GET", "/api/v1/notification/notifications/unread-count").statusCode()).isEqualTo(404);
         assertThat(request("PATCH", "/api/v1/notification/notifications/00000000-0000-0000-0000-000000000001/read")

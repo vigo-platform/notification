@@ -42,6 +42,8 @@ import org.springframework.boot.builder.SpringApplicationBuilder;
 import org.springframework.boot.web.server.servlet.context.ServletWebServerApplicationContext;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Primary;
+import org.springframework.kafka.config.KafkaListenerEndpointRegistry;
 import org.springframework.kafka.listener.KafkaMessageListenerContainer;
 import tools.jackson.databind.ObjectMapper;
 import static org.assertj.core.api.Assertions.*;
@@ -173,6 +175,41 @@ class NotificationRestRuntimeHttpTests {
         }
     }
 
+    @Test void upgradesVersionOneWithKafkaDisabledAndPreservesHistory() throws Exception {
+        try (var ignored = fixture.connection()) {
+            org.flywaydb.core.Flyway.configure().dataSource(fixture.dataSource())
+                    .locations("classpath:inapp/postgresql").schemas(fixture.schema).defaultSchema(fixture.schema)
+                    .createSchemas(false).baselineOnMigrate(false).cleanDisabled(true).target("1").load().migrate();
+        }
+        var id = UUID.randomUUID();
+        executeSql("INSERT INTO in_app_notification (id, owner_id, title, body, created_at_ms, read_at_ms)"
+                + " VALUES ('" + id + "', '42', 'Existing title', 'Existing body', 1, 2)");
+        try (var app = start()) {
+            assertThat(app.containsBean("notificationV2Container")).isFalse();
+            assertThat(scalar("SELECT count(*) FROM flyway_schema_history WHERE version IN ('1', '2') AND success"))
+                    .isEqualTo(2);
+            var list = request(app, "GET", ROOT, token("42"));
+            assertResponse(list, 200, "NOTIFICATIONS_LISTED");
+            assertThat(json.readTree(list.body()).at("/data/items/0/id").asText()).isEqualTo(id.toString());
+            assertThat(scalar("SELECT read_at_ms FROM in_app_notification")).isEqualTo(2);
+        }
+    }
+
+    @Test void forwardedProxyHeadersPreserveBearerOwnership() throws Exception {
+        String[] headers = {"X-Forwarded-Proto", "https", "X-Forwarded-Host", "notification.example.invalid",
+                "X-Forwarded-Prefix", "/edge"};
+        try (var app = start()) {
+            app.getBean(JdbcInAppNotifications.class).create("42", "Private title", "Private body");
+            assertResponse(request(app, "GET", ROOT, null, headers), 401, "UNAUTHORIZED");
+            var owner = request(app, "GET", ROOT + "/unread-count", token("42"), headers);
+            var other = request(app, "GET", ROOT + "/unread-count", token("43"), headers);
+            assertResponse(owner, 200, "UNREAD_COUNT_RETURNED");
+            assertResponse(other, 200, "UNREAD_COUNT_RETURNED");
+            assertThat(json.readTree(owner.body()).at("/data/unread_count").asInt()).isEqualTo(1);
+            assertThat(json.readTree(other.body()).at("/data/unread_count").asInt()).isZero();
+        }
+    }
+
     @Test void refusesUnversionedNonemptyDatabaseWithoutBaselining() throws Exception {
         try (var connection = fixture.connection(); var statement = connection.createStatement()) {
             statement.execute("CREATE TABLE unmanaged_fixture (id integer)");
@@ -221,11 +258,18 @@ class NotificationRestRuntimeHttpTests {
         String broker = "127.0.0.1:" + System.getProperty("notification.test.kafka.port");
         var partition = new TopicPartition("notification.commands.v2", 0);
         var v1Topic = "notification.commands";
+        var v1Partition = new TopicPartition(v1Topic, 0);
+        var v1Group = "vigo-notification-service-v1-fixture";
         var group = "vigo-notification-service-v2-fixture";
         var settings = new String[] {"--notification.kafka.v2.enabled=true", "--notification.kafka.v2.mode=isolated-synthetic",
                 "--notification.kafka.v2.synthetic-user-ids=42", "--notification.kafka.v2.bootstrap-servers=" + broker,
                 "--notification.kafka.v2.group-id=" + group, "--spring.kafka.bootstrap-servers=" + broker,
-                "--notification.kafka.enabled=true"};
+                "--spring.kafka.consumer.group-id=" + v1Group,
+                "--notification.kafka.enabled=true",
+                // V1 validates SMTP settings at startup. The primary sink handles every delivery in this fixture.
+                "--notification.smtp.host=127.0.0.1", "--notification.smtp.port=1",
+                "--notification.smtp.security=NONE", "--notification.smtp.auth=false",
+                "--notification.smtp.from-address=sender@example.invalid"};
         String first = UUID.randomUUID().toString();
         String pending = UUID.randomUUID().toString();
         String rejectedByDatabase = UUID.randomUUID().toString();
@@ -270,6 +314,7 @@ class NotificationRestRuntimeHttpTests {
                     var anotherOtp = UUID.randomUUID().toString();
                     publish(producer, v1Topic, anotherOtp, v1Otp(anotherOtp));
                     await(() -> app.getBean(SyntheticV1Sink.class).deliveries.get() == 2, "v1 still runs after v2 stops");
+                    awaitOffset(admin, v1Group, v1Partition, 3);
                 }
 
                 executeSql("ALTER TABLE notification_v2_delivery DROP CONSTRAINT fixture_block_success");
@@ -284,6 +329,16 @@ class NotificationRestRuntimeHttpTests {
                     assertThat(scalar("SELECT read_at_ms FROM in_app_notification WHERE read_at_ms IS NOT NULL")).isEqualTo(readAt);
                     assertCount(restarted, ownerToken, 2);
                     assertCount(restarted, token("43"), 0);
+
+                    var v1Container = restarted.getBean(KafkaListenerEndpointRegistry.class)
+                            .getListenerContainer("notificationCommands");
+                    assertThat(v1Container).isNotNull();
+                    assertThat(v1Container.isRunning()).isTrue();
+                    restarted.getBean(SyntheticV1Sink.class).failDelivery = true;
+                    String failedOtp = UUID.randomUUID().toString();
+                    publish(producer, v1Topic, failedOtp, v1Otp(failedOtp));
+                    await(() -> !v1Container.isRunning(), "v1 consumer stops after delivery fails");
+                    assertThat(offset(admin, v1Group, v1Partition)).isEqualTo(3);
                 }
             }
         }
@@ -324,7 +379,8 @@ class NotificationRestRuntimeHttpTests {
             if (offset(admin, group, partition) == expected) return;
             Thread.sleep(250);
         }
-        assertThat(offset(admin, group, partition)).as("committed v2 offset").isEqualTo(expected);
+        assertThat(offset(admin, group, partition)).as("committed offset for %s on %s", group, partition)
+                .isEqualTo(expected);
     }
 
     private void awaitSql(String sql, long expected) throws Exception {
@@ -351,12 +407,20 @@ class NotificationRestRuntimeHttpTests {
 
     @TestConfiguration(proxyBeanMethods = false)
     static class SyntheticV1Configuration {
-        @Bean SyntheticV1Sink syntheticV1Sink() { return new SyntheticV1Sink(); }
+        @Bean
+        @Primary
+        SyntheticV1Sink syntheticV1Sink() { return new SyntheticV1Sink(); }
     }
 
     static final class SyntheticV1Sink implements EmailDelivery {
         final AtomicInteger deliveries = new AtomicInteger();
-        @Override public void deliver(NotificationRequested command) { deliveries.incrementAndGet(); }
+        volatile boolean failDelivery;
+
+        @Override public boolean deliver(NotificationRequested command) {
+            if (failDelivery) throw new IllegalStateException("Synthetic delivery failure");
+            deliveries.incrementAndGet();
+            return true;
+        }
     }
 
     private ServletWebServerApplicationContext start(String... overrides) throws Exception {
@@ -367,7 +431,7 @@ class NotificationRestRuntimeHttpTests {
         try (var ignored = fixture.connection()) { /* Revalidate before application migration. */ }
         var arguments = new java.util.ArrayList<>(List.of(
                 "--server.port=0", "--server.address=127.0.0.1", "--spring.main.banner-mode=off",
-                "--notification.in-app.enabled=true", "--notification.email.enabled=false", "--notification.kafka.enabled=false",
+                "--notification.in-app.enabled=true", "--notification.kafka.enabled=false",
                 "--NOTIFICATION_DB_URL=jdbc:postgresql://127.0.0.1:" + System.getProperty("notification.test.postgres.port")
                         + "/" + fixture.database + "?sslmode=disable",
                 "--NOTIFICATION_DB_USERNAME=notification_test", "--NOTIFICATION_DB_PASSWORD=notification_test_only",
@@ -403,11 +467,13 @@ class NotificationRestRuntimeHttpTests {
         return jwt.serialize();
     }
 
-    private HttpResponse<String> request(ServletWebServerApplicationContext app, String method, String path, String token) throws Exception {
+    private HttpResponse<String> request(ServletWebServerApplicationContext app, String method, String path, String token,
+            String... forwardedHeaders) throws Exception {
         try (var client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build()) {
             var request = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + app.getWebServer().getPort() + path))
                     .timeout(Duration.ofSeconds(15)).header("X-User-Id", "42").method(method, HttpRequest.BodyPublishers.noBody());
             if (token != null) request.header("Authorization", "Bearer " + token);
+            if (forwardedHeaders.length > 0) request.headers(forwardedHeaders);
             return client.send(request.build(), HttpResponse.BodyHandlers.ofString());
         }
     }
