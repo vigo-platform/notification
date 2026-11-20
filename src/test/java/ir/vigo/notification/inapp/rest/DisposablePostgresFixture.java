@@ -6,14 +6,14 @@ import java.util.UUID;
 import org.postgresql.ds.PGSimpleDataSource;
 
 /** Test-only capability: marker is provisioned externally in a newly created container, never here. */
-final class DisposablePostgresFixture implements AutoCloseable {
+public final class DisposablePostgresFixture implements AutoCloseable {
     final PGSimpleDataSource source = new PGSimpleDataSource();
     final String database;
     final String schema = "notification_test_" + UUID.randomUUID().toString().replace("-", "");
     private final String identity;
     private boolean created;
 
-    DisposablePostgresFixture() {
+    public DisposablePostgresFixture() {
         database = System.getProperty("notification.test.postgres.database", "");
         identity = System.getProperty("notification.test.postgres.identity", "");
         if (!database.matches("notification_disposable_[a-f0-9]{32}")
@@ -41,13 +41,17 @@ final class DisposablePostgresFixture implements AutoCloseable {
         }
     }
 
-    Connection connection() throws SQLException {
+    public PGSimpleDataSource dataSource() { return source; }
+
+    public String schemaName() { return schema; }
+
+    public Connection connection() throws SQLException {
         Connection connection = source.getConnection();
         try { requireIdentity(connection, database, identity); return connection; }
         catch (SQLException | RuntimeException failure) { connection.close(); throw failure; }
     }
 
-    void create() throws SQLException {
+    public void create() throws SQLException {
         if (created) throw new IllegalStateException("Fixture schema already created");
         try (var connection = connection(); var statement = connection.createStatement()) {
             // No IF NOT EXISTS: never adopt a schema that this instance did not create.

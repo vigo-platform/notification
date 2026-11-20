@@ -11,7 +11,11 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Date;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BooleanSupplier;
 import javax.net.ssl.*;
 import com.nimbusds.jose.*;
 import com.nimbusds.jose.crypto.RSASSASigner;
@@ -22,12 +26,23 @@ import com.nimbusds.jwt.SignedJWT;
 import com.sun.net.httpserver.HttpsConfigurator;
 import com.sun.net.httpserver.HttpsServer;
 import ir.vigo.notification.NotificationServiceApplication;
+import ir.vigo.notification.delivery.EmailDelivery;
 import ir.vigo.notification.inapp.JdbcInAppNotifications;
+import ir.vigo.notification.messaging.model.NotificationRequested;
+import org.apache.kafka.clients.admin.Admin;
+import org.apache.kafka.clients.admin.NewTopic;
+import org.apache.kafka.clients.producer.KafkaProducer;
+import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.serialization.StringSerializer;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.boot.builder.SpringApplicationBuilder;
 import org.springframework.boot.web.server.servlet.context.ServletWebServerApplicationContext;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.context.annotation.Bean;
+import org.springframework.kafka.listener.KafkaMessageListenerContainer;
 import tools.jackson.databind.ObjectMapper;
 import static org.assertj.core.api.Assertions.*;
 
@@ -198,7 +213,157 @@ class NotificationRestRuntimeHttpTests {
         } finally { jwksUnavailable = false; }
     }
 
+    @Test
+    @EnabledIfSystemProperty(named = "notification.test.kafka.port", matches = "[0-9]+")
+    void kafkaAckRecoveryAndRoutingThroughAuthenticatedHttp() throws Exception {
+        String cluster = System.getProperty("notification.test.kafka.cluster", "");
+        assertThat(cluster).matches("[A-Za-z0-9_-]{22}");
+        String broker = "127.0.0.1:" + System.getProperty("notification.test.kafka.port");
+        var partition = new TopicPartition("notification.commands.v2", 0);
+        var v1Topic = "notification.commands";
+        var group = "vigo-notification-service-v2-fixture";
+        var settings = new String[] {"--notification.kafka.v2.enabled=true", "--notification.kafka.v2.mode=isolated-synthetic",
+                "--notification.kafka.v2.synthetic-user-ids=42", "--notification.kafka.v2.bootstrap-servers=" + broker,
+                "--notification.kafka.v2.group-id=" + group, "--spring.kafka.bootstrap-servers=" + broker,
+                "--notification.kafka.enabled=true"};
+        String first = UUID.randomUUID().toString();
+        String pending = UUID.randomUUID().toString();
+        String rejectedByDatabase = UUID.randomUUID().toString();
+        String ownerToken = token("42");
+        try (var admin = Admin.create(Map.of("bootstrap.servers", broker, "default.api.timeout.ms", 30000))) {
+            assertThat(admin.describeCluster().clusterId().get(35, TimeUnit.SECONDS)).isEqualTo(cluster);
+            admin.createTopics(List.of(new NewTopic(partition.topic(), 1, (short) 1), new NewTopic(v1Topic, 1, (short) 1)))
+                    .all().get(15, TimeUnit.SECONDS);
+            try (var producer = new KafkaProducer<>(Map.of("bootstrap.servers", broker, "acks", "all"),
+                    new StringSerializer(), new StringSerializer())) {
+                long readAt;
+                try (var app = start(SyntheticV1Configuration.class, settings)) {
+                    String otpId = UUID.randomUUID().toString();
+                    publish(producer, v1Topic, otpId, v1Otp(otpId));
+                    publish(producer, v1Topic, "user-service:" + first, v2Notice(first));
+                    publish(producer, partition.topic(), otpId, v1Otp(otpId));
+                    publish(producer, partition.topic(), "user-service:" + first, v2Notice(first));
+                    await(() -> app.getBean(SyntheticV1Sink.class).deliveries.get() == 1, "one synthetic v1 delivery");
+                    awaitOffset(admin, group, partition, 2);
+                    assertThat(scalar("SELECT count(*) FROM notification_v2_rejection WHERE reason='VERSION'")).isEqualTo(1);
+                    awaitSql("SELECT count(*) FROM notification_v2_delivery WHERE state='SUCCEEDED'", 1);
+
+                    var list = request(app, "GET", ROOT, ownerToken);
+                    assertResponse(list, 200, "NOTIFICATIONS_LISTED");
+                    assertThat(json.readTree(list.body()).at("/data/items/0/title").asText()).isEqualTo("Coach application approved");
+                    String id = json.readTree(list.body()).at("/data/items/0/id").asText();
+                    assertResponse(request(app, "PATCH", ROOT + "/" + id + "/read", ownerToken), 200, "NOTIFICATION_READ");
+                    readAt = scalar("SELECT read_at_ms FROM in_app_notification");
+                    assertThat(readAt).isPositive();
+
+                    executeSql("ALTER TABLE notification_v2_delivery ADD CONSTRAINT fixture_block_success CHECK (state <> 'SUCCEEDED') NOT VALID");
+                    publish(producer, partition.topic(), "user-service:" + pending, v2Notice(pending));
+                    awaitOffset(admin, group, partition, 3);
+                    assertThat(scalar("SELECT count(*) FROM notification_v2_delivery WHERE state='PENDING'")).isEqualTo(1);
+                    assertThat(scalar("SELECT count(*) FROM in_app_notification")).isEqualTo(1);
+
+                    executeSql("ALTER TABLE notification_v2_command ADD CONSTRAINT fixture_block_acceptance CHECK (false) NOT VALID");
+                    publish(producer, partition.topic(), "user-service:" + rejectedByDatabase, v2Notice(rejectedByDatabase));
+                    var container = app.getBean("notificationV2Container", KafkaMessageListenerContainer.class);
+                    await(() -> !container.isRunning(), "v2 consumer stops on database failure");
+                    assertThat(offset(admin, group, partition)).isEqualTo(3);
+                    var anotherOtp = UUID.randomUUID().toString();
+                    publish(producer, v1Topic, anotherOtp, v1Otp(anotherOtp));
+                    await(() -> app.getBean(SyntheticV1Sink.class).deliveries.get() == 2, "v1 still runs after v2 stops");
+                }
+
+                executeSql("ALTER TABLE notification_v2_delivery DROP CONSTRAINT fixture_block_success");
+                executeSql("ALTER TABLE notification_v2_command DROP CONSTRAINT fixture_block_acceptance");
+                try (var restarted = start(SyntheticV1Configuration.class, settings)) {
+                    publish(producer, partition.topic(), "user-service:" + first, v2Notice(first));
+                    publish(producer, partition.topic(), "user-service:" + first, v2Notice(first).replace("approved.v1", "rejected.v1"));
+                    awaitOffset(admin, group, partition, 6);
+                    awaitSql("SELECT count(*) FROM notification_v2_delivery WHERE state='SUCCEEDED'", 3);
+                    assertThat(scalar("SELECT count(*) FROM notification_v2_command")).isEqualTo(3);
+                    assertThat(scalar("SELECT count(*) FROM notification_v2_rejection WHERE reason='IDENTITY_CONFLICT'")).isEqualTo(1);
+                    assertThat(scalar("SELECT read_at_ms FROM in_app_notification WHERE read_at_ms IS NOT NULL")).isEqualTo(readAt);
+                    assertCount(restarted, ownerToken, 2);
+                    assertCount(restarted, token("43"), 0);
+                }
+            }
+        }
+    }
+
+    private static void publish(KafkaProducer<String, String> producer, String topic, String key, String payload) throws Exception {
+        producer.send(new ProducerRecord<>(topic, 0, key, payload)).get(10, TimeUnit.SECONDS);
+    }
+
+    private static String v2Notice(String id) {
+        return """
+                {"event_id":"%s","event_type":"NotificationRequested","event_version":2,
+                 "occurred_at":"2026-11-18T08:00:00Z","producer":"user-service",
+                 "correlation_id":"39c08cbe-74b4-4adc-a120-09a840a76662",
+                 "data":{"locale":"en","template_id":"notification.coach_application.approved.v1",
+                   "template_parameters":{},"deliveries":[{"channel":"IN_APP","recipient":{"user_id":"42"}}]}}
+                """.formatted(id);
+    }
+
+    private static String v1Otp(String id) {
+        return """
+                {"event_id":"%s","event_type":"NotificationRequested","event_version":1,
+                 "occurred_at":"%s","producer":"auth-service","correlation_id":"39c08cbe-74b4-4adc-a120-09a840a76662",
+                 "data":{"channel":"EMAIL","purpose":"LOGIN_OTP","locale":"en",
+                   "template_id":"auth.login_otp.email.v1","recipient":{"destination":"otp@example.invalid"},
+                   "template_parameters":{"otp_code":"012345"},"expires_at":"%s"}}
+                """.formatted(id, Instant.now(), Instant.now().plusSeconds(120));
+    }
+
+    private static long offset(Admin admin, String group, TopicPartition partition) throws Exception {
+        var committed = admin.listConsumerGroupOffsets(group).partitionsToOffsetAndMetadata()
+                .get(10, TimeUnit.SECONDS).get(partition);
+        return committed == null ? -1 : committed.offset();
+    }
+
+    private static void awaitOffset(Admin admin, String group, TopicPartition partition, long expected) throws Exception {
+        for (int attempt = 0; attempt < 120; attempt++) {
+            if (offset(admin, group, partition) == expected) return;
+            Thread.sleep(250);
+        }
+        assertThat(offset(admin, group, partition)).as("committed v2 offset").isEqualTo(expected);
+    }
+
+    private void awaitSql(String sql, long expected) throws Exception {
+        for (int attempt = 0; attempt < 120; attempt++) {
+            if (scalar(sql) == expected) return;
+            Thread.sleep(250);
+        }
+        assertThat(scalar(sql)).isEqualTo(expected);
+    }
+
+    private static void await(BooleanSupplier ready, String description) throws InterruptedException {
+        for (int attempt = 0; attempt < 120; attempt++) {
+            if (ready.getAsBoolean()) return;
+            Thread.sleep(250);
+        }
+        assertThat(ready.getAsBoolean()).as(description).isTrue();
+    }
+
+    private void executeSql(String sql) throws Exception {
+        try (var connection = fixture.connection(); var statement = connection.createStatement()) {
+            statement.execute(sql);
+        }
+    }
+
+    @TestConfiguration(proxyBeanMethods = false)
+    static class SyntheticV1Configuration {
+        @Bean SyntheticV1Sink syntheticV1Sink() { return new SyntheticV1Sink(); }
+    }
+
+    static final class SyntheticV1Sink implements EmailDelivery {
+        final AtomicInteger deliveries = new AtomicInteger();
+        @Override public void deliver(NotificationRequested command) { deliveries.incrementAndGet(); }
+    }
+
     private ServletWebServerApplicationContext start(String... overrides) throws Exception {
+        return start(null, overrides);
+    }
+
+    private ServletWebServerApplicationContext start(Class<?> extraSource, String... overrides) throws Exception {
         try (var ignored = fixture.connection()) { /* Revalidate before application migration. */ }
         var arguments = new java.util.ArrayList<>(List.of(
                 "--server.port=0", "--server.address=127.0.0.1", "--spring.main.banner-mode=off",
@@ -213,7 +378,9 @@ class NotificationRestRuntimeHttpTests {
             arguments.removeIf(argument -> argument.startsWith(prefix));
             arguments.add(override);
         }
-        var application = new SpringApplicationBuilder(NotificationServiceApplication.class).build();
+        var builder = new SpringApplicationBuilder(NotificationServiceApplication.class);
+        if (extraSource != null) builder.sources(extraSource);
+        var application = builder.build();
         // Repeated real contexts must not reset the JVM logger/appender used by v1 output-capture tests.
         application.setListeners(application.getListeners().stream()
                 .filter(listener -> !(listener instanceof org.springframework.boot.context.logging.LoggingApplicationListener)).toList());

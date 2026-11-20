@@ -40,6 +40,12 @@ notification:
     from-address: ${SMTP_FROM_ADDRESS:}
   kafka:
     enabled: ${NOTIFICATION_KAFKA_ENABLED:false}
+    v2:
+      enabled: ${NOTIFICATION_KAFKA_V2_ENABLED:false}
+      mode: ${NOTIFICATION_KAFKA_V2_MODE:}
+      bootstrap-servers: ${NOTIFICATION_KAFKA_V2_BOOTSTRAP_SERVERS:}
+      group-id: ${NOTIFICATION_KAFKA_V2_GROUP:vigo-notification-service-v2}
+      synthetic-user-ids: ${NOTIFICATION_KAFKA_V2_SYNTHETIC_USER_IDS:}
 server:
   port: ${SERVER_PORT:8080}
 management:
