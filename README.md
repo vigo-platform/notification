@@ -9,9 +9,10 @@ schema before serving requests. A bounded Hikari pool and PostgreSQL driver are
 included. Disabled startup requires no DB/Auth settings and exposes no IN_APP routes.
 See [runtime configuration and verification](docs/in-app-runtime.md).
 
-There is no IN_APP ingestion or Kafka v2 implementation in this change. Existing
-EMAIL/OTP/Kafka/SMTP behavior is preserved. Earlier preparation reports and scope
-statements below describe historical checkpoints.
+Kafka v2 can ingest durable IN_APP notifications in an isolated synthetic
+environment. See the [v2 Kafka runbook](docs/notification-kafka-v2.md) for test
+configuration and the requirements for shared Development activation. The
+Kafka and SMTP sections below describe v1.
 
 ## APPROVED FOUNDATION
 

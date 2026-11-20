@@ -15,7 +15,7 @@ import javax.sql.DataSource;
  * Internal persistence boundary; intentionally not registered as a Spring bean.
  * Callers must supply an owner derived from a verified principal for reads/updates,
  * or an authorized internal recipient for creation. This class does not authenticate.
- * Uses dedicated auto-commit connections, not caller-managed transactions.
+ * The default methods use dedicated auto-commit connections.
  */
 public final class JdbcInAppNotifications {
     private final DataSource dataSource;
@@ -28,9 +28,25 @@ public final class JdbcInAppNotifications {
 
     /** No public creation API or EMAIL-command mapping is implied by this method. */
     public InAppNotification create(String recipient, String title, String body) {
+        try (var connection = connection()) {
+            return insert(connection, recipient, title, body);
+        } catch (SQLException failure) {
+            throw storageFailure();
+        }
+    }
+
+    /** Allows delivery bookkeeping and history to commit in one transaction owned by the caller. */
+    public InAppNotification createInTransaction(Connection connection, String recipient, String title, String body)
+            throws SQLException {
+        if (connection.getAutoCommit()) throw new SQLException("IN_APP write requires an active transaction");
+        return insert(connection, recipient, title, body);
+    }
+
+    private InAppNotification insert(Connection connection, String recipient, String title, String body)
+            throws SQLException {
         var notification = new InAppNotification(UUID.randomUUID(), recipient, title, body,
                 Instant.ofEpochMilli(clock.millis()), null);
-        try (var connection = connection(); var statement = connection.prepareStatement("""
+        try (var statement = connection.prepareStatement("""
                 INSERT INTO in_app_notification (id, owner_id, title, body, created_at_ms, read_at_ms)
                 VALUES (?, ?, ?, ?, ?, NULL)
                 """)) {
@@ -41,8 +57,6 @@ public final class JdbcInAppNotifications {
             statement.setLong(5, notification.createdAt().toEpochMilli());
             statement.executeUpdate();
             return notification;
-        } catch (SQLException failure) {
-            throw storageFailure();
         }
     }
 
