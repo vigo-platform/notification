@@ -1,0 +1,110 @@
+name: PR Verification
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: bash
+    env:
+      LOG_VECTOR_ENABLED: 'false'
+      JAVA_TOOL_OPTIONS: -Xms64m -Xmx512m -XX:ActiveProcessorCount=4 -XX:ReservedCodeCacheSize=96m
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          overwrite-settings: false
+
+      - name: Check runner prerequisites
+        run: |
+          pwsh -NoLogo -NoProfile -Command '$PSVersionTable.PSVersion'
+          test "$(docker info --format '{{.OSType}}')" = linux
+          python3 --version
+          jq --version
+
+      - name: Maven clean verify
+        run: |
+          chmod +x mvnw
+          ./mvnw -B -ntp clean verify
+
+      - name: Verify disposable PostgreSQL and Kafka integration
+        run: |
+          # Require fresh Surefire reports from the guarded run.
+          rm -f -- target/surefire-reports/TEST-ir.vigo.notification.inapp.rest.{PostgresNotificationTests,NotificationRestRuntimeHttpTests}.xml \
+                   target/surefire-reports/TEST-ir.vigo.notification.messaging.v2.V2PostgresTests.xml
+          pwsh -NoLogo -NoProfile -File scripts/verify-disposable-postgres.ps1 -WithKafka -MavenCommand ./mvnw \
+            -Test PostgresNotificationTests,NotificationRestRuntimeHttpTests,V2PostgresTests
+          python3 - <<'PY'
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+
+          suites = {
+              "inapp.rest.PostgresNotificationTests": "verifiedBearerTokensEnforceCrossUserIsolationOnPostgres",
+              "inapp.rest.NotificationRestRuntimeHttpTests": "kafkaAckRecoveryAndRoutingThroughAuthenticatedHttp",
+              "messaging.v2.V2PostgresTests": "concurrentDuplicateIngressAndWorkersPreserveReadHistoryAndRejectConflicts",
+          }
+          for suite, required_case in suites.items():
+              report = Path("target/surefire-reports") / f"TEST-ir.vigo.notification.{suite}.xml"
+              if not report.is_file():
+                  raise SystemExit(f"Missing required fixture report: {report}")
+              results = ET.parse(report).getroot()
+              cases = results.findall("testcase")
+              if not cases or any(results.get(key) != "0" for key in ("skipped", "errors", "failures")):
+                  raise SystemExit(f"Required fixture suite must run all tests successfully: {suite}")
+              if not any(case.get("name") == required_case for case in cases):
+                  raise SystemExit(f"Required integration case did not run: {suite}.{required_case}")
+              print(f"Verified {suite}: {len(cases)} passed")
+          PY
+
+      - name: Build local Docker image
+        run: docker build --tag vigo-notification-service:pr .
+
+      - name: Smoke-test Docker image
+        timeout-minutes: 3
+        run: |
+          container=$(docker run --detach --rm --publish 127.0.0.1::18080 \
+            --env SERVER_PORT=18080 vigo-notification-service:pr)
+          cleanup() {
+            if [ "$?" -ne 0 ]; then
+              docker logs "$container" || true
+            fi
+            docker stop "$container" >/dev/null
+          }
+          trap cleanup EXIT
+          test "$(docker exec "$container" id -u)" = 10001
+          test "$(docker exec "$container" id -g)" = 10001
+          binding=$(docker port "$container" 18080/tcp)
+          [[ "$binding" =~ ^127\.0\.0\.1:[0-9]+$ ]]
+          url="http://$binding"
+
+          health=''
+          for attempt in {1..30}; do
+            if health=$(curl --fail --silent --max-time 2 "$url/actuator/health"); then
+              break
+            fi
+            sleep 1
+          done
+          test -n "$health"
+          jq -e '. == {"status":"UP"}' <<< "$health"
+          curl --fail --silent --show-error --max-time 5 "$url/actuator/info" | jq -e '. == {}'
+          curl --fail --silent --show-error --max-time 5 "$url/actuator" |
+            jq -e '._links | has("health") and has("info") and has("prometheus")'
+          metrics=$(curl --fail --silent --show-error --max-time 5 "$url/actuator/prometheus")
+          grep -Fxq '# TYPE jvm_memory_used_bytes gauge' <<< "$metrics"
+          for route in /actuator/{env,configprops,beans,loggers,heapdump} /api/v1/notification/notifications; do
+            test "$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 5 "$url$route")" = 404
+          done
+          docker logs "$container" | jq -es 'length > 0 and all(.[]; .service_name == "notification")'

@@ -1,0 +1,15 @@
+# Documentation only; NOT auto-imported. See in-app-runtime.md and .env.example.
+# Runtime explicitly owns Hikari/Flyway rather than spring.datasource auto-config.
+notification:
+  in-app:
+    enabled: ${NOTIFICATION_IN_APP_ENABLED:false}
+# Required environment when enabled:
+# NOTIFICATION_DB_URL, NOTIFICATION_DB_USERNAME, NOTIFICATION_DB_PASSWORD,
+# NOTIFICATION_DB_SCHEMA, NOTIFICATION_JWT_JWKS_URL,
+# NOTIFICATION_JWT_ISSUER, NOTIFICATION_JWT_AUDIENCE.
+# Schema must already exist. Disposable development uses public in a dedicated DB.
+# Automatic Flyway location: classpath:inapp/postgresql (existing V1 only).
+# No baseline, repair, clean or schema creation. Startup principal requires migration
+# DDL privileges in its schema plus runtime SELECT/INSERT/UPDATE and schema USAGE.
+# Pool: max 5, min idle 0, auto-commit, 5s acquire / 2s validation timeout.
+# PostgreSQL URL must explicitly use verify-full TLS, except loopback-only disable.

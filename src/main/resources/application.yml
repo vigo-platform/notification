@@ -24,8 +24,16 @@ spring:
     admin:
       auto-create: false
 notification:
+  in-app:
+    enabled: ${NOTIFICATION_IN_APP_ENABLED:false}
   kafka:
     enabled: ${NOTIFICATION_KAFKA_ENABLED:false}
+    v2:
+      enabled: ${NOTIFICATION_KAFKA_V2_ENABLED:false}
+      mode: ${NOTIFICATION_KAFKA_V2_MODE:}
+      bootstrap-servers: ${NOTIFICATION_KAFKA_V2_BOOTSTRAP_SERVERS:}
+      group-id: ${NOTIFICATION_KAFKA_V2_GROUP:vigo-notification-service-v2}
+      synthetic-user-ids: ${NOTIFICATION_KAFKA_V2_SYNTHETIC_USER_IDS:}
   smtp:
     host: ${SMTP_HOST:}
     port: ${SMTP_PORT:587}

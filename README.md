@@ -1,5 +1,19 @@
 # Vigo Notification Service
 
+## IN_APP REST (opt-in)
+
+`NOTIFICATION_IN_APP_ENABLED=true` activates the existing owner-scoped list,
+unread-count and mark-read API with service-owned JWT/JWKS authentication.
+Required DB/Auth settings validate at startup; Flyway migrates the configured
+schema before serving requests. A bounded Hikari pool and PostgreSQL driver are
+included. Disabled startup requires no DB/Auth settings and exposes no IN_APP routes.
+See [runtime configuration and verification](docs/in-app-runtime.md).
+
+Kafka v2 can ingest durable IN_APP notifications in an isolated synthetic
+environment. See the [v2 Kafka runbook](docs/notification-kafka-v2.md) for test
+configuration and the requirements for shared Development activation. The
+Kafka and SMTP sections below describe v1.
+
 ## APPROVED FOUNDATION
 
 Independent operational service foundation using Java 21 LTS, Spring Boot 4.1.1,
@@ -67,7 +81,7 @@ keep the runtime defaults.
 - JMX is disabled and all Actuator JMX exposure is excluded.
 
 Default endpoint access is denied. Health, info and Prometheus have read-only
-HTTP access. No authentication or business endpoint is implemented. Health
+HTTP access. IN_APP routes require bearer authentication when enabled. Health
 reports the operational application status, not notification delivery capability.
 
 The test suite starts the production configuration on a random port without a
