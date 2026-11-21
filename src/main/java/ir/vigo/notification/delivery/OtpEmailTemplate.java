@@ -14,7 +14,7 @@ final class OtpEmailTemplate {
     private static final ResourceBundle.Control NO_LOCALE_FALLBACK =
             ResourceBundle.Control.getNoFallbackControl(ResourceBundle.Control.FORMAT_PROPERTIES);
 
-    static Rendered render(String templateId, String locale, String otpCode) {
+    static EmailContent render(String templateId, String locale, String otpCode) {
         boolean english = "en".equals(locale);
         String language = english ? "en" : "fa";
         String direction = english ? "ltr" : "rtl";
@@ -34,7 +34,7 @@ final class OtpEmailTemplate {
         String text = String.join("\n\n", title, intro, codeLabel + "\n" + otpCode, expiry, safety, footer);
         String html = HTML.formatted(language, direction, alignment, escape(brand), escape(subtitle), escape(title),
                 escape(intro), escape(codeLabel), escape(otpCode), escape(expiry), escape(safety), escape(footer));
-        return new Rendered(language, subject, text, html);
+        return new EmailContent(language, subject, text, html);
     }
 
     private static String escape(String value) {
@@ -52,11 +52,4 @@ final class OtpEmailTemplate {
     }
 
     private OtpEmailTemplate() {}
-
-    record Rendered(String language, String subject, String text, String html) {
-        @Override
-        public String toString() {
-            return "RenderedOtpEmail[redacted]";
-        }
-    }
 }

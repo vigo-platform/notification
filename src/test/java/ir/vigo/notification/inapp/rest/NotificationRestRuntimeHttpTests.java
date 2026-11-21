@@ -215,7 +215,7 @@ class NotificationRestRuntimeHttpTests {
             statement.execute("CREATE TABLE unmanaged_fixture (id integer)");
         }
         assertThatThrownBy(() -> { try (var ignored = start()) { fail("Startup must reject unmanaged schema"); } })
-                .hasStackTraceContaining("IN_APP database migration failed");
+                .hasStackTraceContaining("Notification database migration failed");
         assertThat(scalar("SELECT count(*) FROM information_schema.tables WHERE table_schema='" + fixture.schema + "' AND table_name='in_app_notification'")).isZero();
     }
 
@@ -225,13 +225,13 @@ class NotificationRestRuntimeHttpTests {
             statement.execute("UPDATE flyway_schema_history SET checksum=0 WHERE version='1'");
         }
         assertThatThrownBy(() -> { try (var ignored = start()) { fail("Startup must reject migration mismatch"); } })
-                .hasStackTraceContaining("IN_APP database migration failed");
+                .hasStackTraceContaining("Notification database migration failed");
     }
 
     @Test void missingSchemaIsNotCreatedAutomatically() throws Exception {
         assertThatThrownBy(() -> { try (var ignored = start("--NOTIFICATION_DB_SCHEMA=notification_missing")) {
             fail("Startup must reject missing schema");
-        } }).hasStackTraceContaining("IN_APP database migration failed");
+        } }).hasStackTraceContaining("Notification database migration failed");
         assertThat(scalar("SELECT count(*) FROM pg_namespace WHERE nspname='notification_missing'")).isZero();
         assertThat(scalar("SELECT count(*) FROM information_schema.tables WHERE table_schema='" + fixture.schema + "' AND table_name='in_app_notification'")).isZero();
     }
@@ -239,7 +239,7 @@ class NotificationRestRuntimeHttpTests {
     @Test void invalidDatabaseCredentialsPreventStartup() {
         assertThatThrownBy(() -> { try (var ignored = start("--NOTIFICATION_DB_USERNAME=nonexistent_fixture_role")) {
             fail("Startup must reject invalid database credentials");
-        } }).hasStackTraceContaining("IN_APP database migration failed");
+        } }).hasStackTraceContaining("Notification database migration failed");
     }
 
     @Test void jwksOutageFailsClosedThroughRealHttps() throws Exception {

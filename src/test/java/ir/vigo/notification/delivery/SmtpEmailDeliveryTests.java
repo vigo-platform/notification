@@ -63,6 +63,26 @@ class SmtpEmailDeliveryTests {
     }
 
     @Test
+    void coachEmailEmbedsTheLogoReferencedByItsHtml() throws Exception {
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor(); var relay = loopbackRelay()) {
+            var received = executor.submit(() -> exchange(relay, false, "250 accepted"));
+            var content = CoachApplicationEmailTemplate.render("en", NOW, "https://vigoapp.ir/register", "");
+            delivery(relay, Clock.fixed(NOW, ZoneOffset.UTC)).deliver(RECIPIENT, content);
+            var message = new MimeMessage(Session.getInstance(new Properties()), new ByteArrayInputStream(
+                    received.get(5, TimeUnit.SECONDS).getBytes(StandardCharsets.US_ASCII)));
+
+            var alternatives = (MimeMultipart) message.getContent();
+            assertThat(alternatives.getBodyPart(0).isMimeType("text/plain")).isTrue();
+            var htmlWithLogo = (MimeMultipart) alternatives.getBodyPart(1).getContent();
+            assertThat(htmlWithLogo.getBodyPart(0).getContent().toString()).contains("src=\"cid:vigo-logo\"");
+            var logo = htmlWithLogo.getBodyPart(1);
+            assertThat(logo.isMimeType("image/png")).isTrue();
+            assertThat(logo.getHeader("Content-ID")).containsExactly("<vigo-logo>");
+            assertThat(logo.getInputStream().readAllBytes()).isEqualTo(content.inlineImage().resource().getContentAsByteArray());
+        }
+    }
+
+    @Test
     void relayUnavailableDuringConnectIsSafeToRetry() throws Exception {
         try (var executor = Executors.newVirtualThreadPerTaskExecutor(); var relay = loopbackRelay()) {
             var greeting = executor.submit(() -> {
@@ -127,7 +147,16 @@ class SmtpEmailDeliveryTests {
             var message = new StringBuilder();
             for (String line = input.readLine(); line != null; line = input.readLine()) {
                 if (line.equals(".")) {
-                    if (result != null) reply(output, result);
+                    if (result != null) {
+                        reply(output, result);
+                        // Keep the connection open so the client can reset a rejected SMTP transaction.
+                        String command = input.readLine();
+                        if ("RSET".equals(command)) {
+                            reply(output, "250 reset");
+                            command = input.readLine();
+                        }
+                        assertThat(command).isEqualTo("QUIT");
+                    }
                     return message.toString();
                 }
                 message.append(line.startsWith("..") ? line.substring(1) : line).append("\r\n");

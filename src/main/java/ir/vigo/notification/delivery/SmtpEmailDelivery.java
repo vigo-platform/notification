@@ -1,11 +1,13 @@
 package ir.vigo.notification.delivery;
 
-import java.io.UnsupportedEncodingException;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.util.Properties;
+import java.util.function.BooleanSupplier;
 
 import ir.vigo.notification.messaging.model.NotificationRequested;
+import jakarta.activation.DataHandler;
 import jakarta.mail.AuthenticationFailedException;
 import jakarta.mail.Message;
 import jakarta.mail.MessagingException;
@@ -15,10 +17,11 @@ import jakarta.mail.internet.InternetAddress;
 import jakarta.mail.internet.MimeBodyPart;
 import jakarta.mail.internet.MimeMessage;
 import jakarta.mail.internet.MimeMultipart;
+import jakarta.mail.util.ByteArrayDataSource;
 import org.eclipse.angus.mail.smtp.SMTPAddressFailedException;
 import org.eclipse.angus.mail.smtp.SMTPSendFailedException;
 
-final class SmtpEmailDelivery implements EmailDelivery {
+public final class SmtpEmailDelivery implements EmailDelivery {
     private static final String UTF_8 = StandardCharsets.UTF_8.name();
     private final SmtpProperties settings;
     private final Clock clock;
@@ -46,12 +49,21 @@ final class SmtpEmailDelivery implements EmailDelivery {
         if (expired(request)) {
             return false;
         }
+        var content = OtpEmailTemplate.render(request.templateId(), request.locale(), request.otpCode());
+        return send(request.destination(), content, () -> expired(request));
+    }
+
+    public void deliver(String destination, EmailContent content) {
+        send(destination, content, () -> false);
+    }
+
+    private boolean send(String destination, EmailContent content, BooleanSupplier expired) {
         try {
-            MimeMessage email = createEmail(request);
+            MimeMessage email = createEmail(destination, content);
             var transport = session.getTransport("smtp");
             try {
                 connect(transport);
-                if (expired(request)) {
+                if (expired.getAsBoolean()) {
                     return false;
                 }
                 try {
@@ -67,7 +79,7 @@ final class SmtpEmailDelivery implements EmailDelivery {
                     // A QUIT failure cannot undo acceptance or replace a send failure.
                 }
             }
-        } catch (MessagingException | UnsupportedEncodingException ignored) {
+        } catch (MessagingException | IOException ignored) {
             throw new IllegalStateException("SMTP email delivery failed");
         }
     }
@@ -104,22 +116,36 @@ final class SmtpEmailDelivery implements EmailDelivery {
         return new SmtpFailure(SmtpFailure.Reason.ACCEPTANCE_UNKNOWN);
     }
 
-    private MimeMessage createEmail(NotificationRequested request) throws MessagingException, UnsupportedEncodingException {
-        var template = OtpEmailTemplate.render(request.templateId(), request.locale(), request.otpCode());
+    private MimeMessage createEmail(String destination, EmailContent content)
+            throws MessagingException, IOException {
         var plainText = new MimeBodyPart();
-        plainText.setText(template.text(), UTF_8);
+        plainText.setText(content.text(), UTF_8);
         var html = new MimeBodyPart();
-        html.setText(template.html(), UTF_8, "html");
+        html.setText(content.html(), UTF_8, "html");
         var body = new MimeMultipart("alternative");
         body.addBodyPart(plainText);
-        body.addBodyPart(html);
+        if (content.inlineImage() == null) {
+            body.addBodyPart(html);
+        } else {
+            var image = content.inlineImage();
+            var logo = new MimeBodyPart();
+            logo.setDataHandler(new DataHandler(new ByteArrayDataSource(image.resource().getContentAsByteArray(), "image/png")));
+            logo.setContentID("<" + image.contentId() + ">");
+            logo.setDisposition(MimeBodyPart.INLINE);
+            var related = new MimeMultipart("related");
+            related.addBodyPart(html);
+            related.addBodyPart(logo);
+            var htmlWithImage = new MimeBodyPart();
+            htmlWithImage.setContent(related);
+            body.addBodyPart(htmlWithImage);
+        }
 
         var email = new MimeMessage(session);
         email.setFrom(new InternetAddress(settings.fromAddress(), settings.fromName(), UTF_8));
-        email.setRecipient(Message.RecipientType.TO, new InternetAddress(request.destination(), true));
-        email.setSubject(template.subject(), UTF_8);
+        email.setRecipient(Message.RecipientType.TO, new InternetAddress(destination, true));
+        email.setSubject(content.subject(), UTF_8);
         email.setContent(body);
-        email.setHeader("Content-Language", template.language());
+        email.setHeader("Content-Language", content.language());
         email.saveChanges();
         return email;
     }

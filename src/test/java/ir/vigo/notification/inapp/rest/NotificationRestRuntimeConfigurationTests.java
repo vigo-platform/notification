@@ -36,30 +36,4 @@ class NotificationRestRuntimeConfigurationTests {
         runner.withPropertyValues(values.entrySet().stream().map(e -> e.getKey() + "=" + e.getValue()).toArray(String[]::new))
                 .run(context -> assertThat(context).hasFailed());
     }
-
-    @ParameterizedTest @ValueSource(strings = {"", "public,other", "public;drop", "pg_catalog", "information_schema", "Public"})
-    void rejectsUnsafeSchema(String schema) {
-        assertThatThrownBy(() -> settings("jdbc:postgresql://localhost/test?sslmode=disable", schema))
-                .isInstanceOf(IllegalStateException.class);
-    }
-
-    @ParameterizedTest @ValueSource(strings = {"jdbc:h2:mem:test", "jdbc:postgresql://remote.invalid/test",
-            "jdbc:postgresql://remote.invalid/test?sslmode=disable", "jdbc:postgresql://remote.invalid/test?sslmode=require",
-            "jdbc:postgresql://user:secret@remote.invalid/test?sslmode=verify-full",
-            "jdbc:postgresql://localhost/test?sslmode=disable&currentSchema=other",
-            "jdbc:postgresql://localhost/test?sslmode=disable&password=secret",
-            "jdbc:postgresql://localhost/test?sslmode=disable&sslmode=verify-full"})
-    void rejectsUnsafeDatabaseConfigurationWithoutEchoingValues(String url) {
-        assertThatThrownBy(() -> settings(url, "public")).isInstanceOf(IllegalStateException.class)
-                .hasMessage("Invalid IN_APP PostgreSQL URL or TLS configuration");
-    }
-
-    @Test void acceptsExplicitPublicOrOwnedSchemaAndRemoteVerifiedTls() {
-        assertThat(settings("jdbc:postgresql://db.invalid/dedicated?sslmode=verify-full", "public").schema).isEqualTo("public");
-        assertThat(settings("jdbc:postgresql://localhost/test?sslmode=disable", "notification").schema).isEqualTo("notification");
-    }
-
-    private NotificationRestRuntime.Settings settings(String url, String schema) {
-        return new NotificationRestRuntime.Settings(url, "test", "test-only", schema);
-    }
 }

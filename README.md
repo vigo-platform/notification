@@ -6,13 +6,32 @@
 unread-count and mark-read API with service-owned JWT/JWKS authentication.
 Required DB/Auth settings validate at startup; Flyway migrates the configured
 schema before serving requests. A bounded Hikari pool and PostgreSQL driver are
-included. Disabled startup requires no DB/Auth settings and exposes no IN_APP routes.
+included. The IN_APP switch controls its JWT settings and HTTP routes.
 See [runtime configuration and verification](docs/in-app-runtime.md).
 
 Kafka v2 can ingest durable IN_APP notifications in an isolated synthetic
 environment. See the [v2 Kafka runbook](docs/notification-kafka-v2.md) for test
-configuration and the requirements for shared Development activation. The
-Kafka and SMTP sections below describe v1.
+configuration and the requirements for shared Development activation.
+
+## Coach application result emails
+
+Set `NOTIFICATION_KAFKA_USER_EVENTS_ENABLED=true` with the Kafka broker, SMTP
+relay and `NOTIFICATION_DB_*` settings in `.env.example`. Flyway creates the
+email inbox on startup. The consumer uses `user.events` and defaults to the
+`vigo-notification-service-user-events` group. A new group reads from the
+configured offset reset policy, which defaults to `earliest`.
+
+Approved and rejected v2 events from `user-service` send Persian or English
+email. Approval shows the invitation deadline as Solar Hijri and Gregorian dates
+based on Asia/Tehran and includes the regular
+registration link (`NOTIFICATION_REGISTRATION_URL`, default
+`https://vigoapp.ir/register`). Rejection includes the review reason when
+provided in `data.reason`. The reason is kept out of service logs.
+
+The service commits the `event_id` claim in PostgreSQL before submitting mail.
+It retries confirmed transient SMTP failures up to twice. An uncertain relay
+response or a crash after the claim can leave delivery unconfirmed. The claim
+prevents a second submission on Kafka redelivery.
 
 ## APPROVED FOUNDATION
 
