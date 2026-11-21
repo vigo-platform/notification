@@ -50,13 +50,12 @@ exist and be explicitly approved/configured. System schemas and unsafe identifie
 are rejected. Schema is set on pooled connections and on Flyway; URL-supplied
 search-path overrides are rejected.
 
-The JDBC URL must have an explicit database and `sslmode=verify-full`; optional
-`sslrootcert` supplies the trust root. The only plaintext exception is an explicit
-`sslmode=disable` on literal loopback/localhost for disposable local development.
-Other query parameters, credentials in URLs, duplicate parameters and fragments
-are rejected. This constrains driver configuration to avoid credential exposure,
-schema overrides or timeout/TLS bypasses. Remote plaintext is not enabled by a
-development flag. Deployed TLS capability/trust remains an integration check.
+The JDBC URL must name a database explicitly. The service defaults to
+`sslmode=disable` for every host, including Docker service names. An explicit
+`sslmode` in the URL overrides the default. Use `sslmode=verify-full` for TLS with
+server certificate and hostname verification. `sslrootcert` can supply the trust
+root for verified TLS. Query parameters are limited to `sslmode` and `sslrootcert`.
+Credentials in URLs, duplicate parameters and fragments are rejected.
 
 Enabled startup validates required settings and JWT URL/issuer/audience before
 database access. It creates a Hikari pool (maximum 5, minimum idle 0, auto-commit,
@@ -209,13 +208,9 @@ then explicitly authorize a controlled development rollout and authenticated
 smoke test. No shared database inspection or rollout was performed in this task.
 IN_APP ingestion and Kafka v2 remain separate; these endpoints read existing rows.
 
-Development Compose PostgreSQL TLS must be reconciled before enabling IN_APP REST
-there. Current runtime policy still requires `sslmode=verify-full` for a non-loopback
-database host; a Compose service hostname is not loopback. Do not substitute
-`sslmode=disable`, weaken certificate checks, or assume the current Compose setup
-provides compatible TLS. Confirm server TLS, certificate hostname/trust and the
-connection URL with the deployment owner before activation. No Compose configuration
-or production TLS policy was changed or deployed during this work.
+The original rollout required verified TLS for PostgreSQL on non-loopback hosts.
+The current runtime accepts `sslmode=disable` for Docker service names. Deployments
+that require hostname and certificate verification can set `sslmode=verify-full`.
 
 ## Fixture hardening verification and commit readiness
 

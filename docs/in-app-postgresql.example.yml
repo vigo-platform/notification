@@ -12,4 +12,4 @@ notification:
 # No baseline, repair, clean or schema creation. Startup principal requires migration
 # DDL privileges in its schema plus runtime SELECT/INSERT/UPDATE and schema USAGE.
 # Pool: max 5, min idle 0, auto-commit, 5s acquire / 2s validation timeout.
-# PostgreSQL URL must explicitly use verify-full TLS, except loopback-only disable.
+# PostgreSQL defaults to sslmode=disable. Set sslmode=verify-full in the URL for verified TLS.

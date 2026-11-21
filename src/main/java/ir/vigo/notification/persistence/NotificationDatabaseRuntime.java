@@ -1,6 +1,8 @@
 package ir.vigo.notification.persistence;
 
 import java.net.URI;
+import java.util.Locale;
+import java.util.Set;
 import javax.sql.DataSource;
 
 import com.zaxxer.hikari.HikariConfig;
@@ -36,6 +38,8 @@ public class NotificationDatabaseRuntime {
         config.setConnectionTimeout(5000);
         config.setValidationTimeout(2000);
         config.setInitializationFailTimeout(-1);
+        // The PostgreSQL driver gives an explicit sslmode in the JDBC URL priority.
+        config.addDataSourceProperty("sslmode", "disable");
         config.addDataSourceProperty("connectTimeout", "5");
         config.addDataSourceProperty("socketTimeout", "10");
         config.addDataSourceProperty("options", "-c statement_timeout=10000 -c lock_timeout=5000");
@@ -60,6 +64,8 @@ public class NotificationDatabaseRuntime {
     }
 
     static final class Settings {
+        private static final Set<String> SSL_MODES = Set.of("disable", "allow", "prefer", "require", "verify-ca", "verify-full");
+
         final String url;
         final String username;
         final String password;
@@ -73,17 +79,18 @@ public class NotificationDatabaseRuntime {
                         || address.getPath() == null || !address.getPath().matches("/[A-Za-z0-9_-]+")) {
                     throw new IllegalArgumentException();
                 }
-                boolean loopback = java.util.Set.of("localhost", "127.0.0.1", "[::1]").contains(address.getHost());
                 var query = new java.util.HashMap<String, String>();
                 if (address.getRawQuery() != null) {
                     for (String part : address.getRawQuery().split("&", -1)) {
                         String[] pair = part.split("=", 2);
-                        if (pair.length != 2 || !java.util.Set.of("sslmode", "sslrootcert").contains(pair[0])
+                        if (pair.length != 2 || !Set.of("sslmode", "sslrootcert").contains(pair[0])
                                 || query.put(pair[0], pair[1]) != null) throw new IllegalArgumentException();
                     }
                 }
-                if (!"verify-full".equals(query.get("sslmode"))
-                        && !(loopback && "disable".equals(query.get("sslmode")))) throw new IllegalArgumentException();
+                String sslMode = query.get("sslmode");
+                if (sslMode != null && !SSL_MODES.contains(sslMode.toLowerCase(Locale.ROOT))) {
+                    throw new IllegalArgumentException();
+                }
             } catch (RuntimeException invalid) { throw new IllegalStateException("Invalid notification PostgreSQL URL or TLS configuration"); }
             if (!schema.matches("[a-z][a-z0-9_]{0,62}") || schema.startsWith("pg_") || schema.equals("information_schema")) {
                 throw new IllegalStateException("Notification schema must be an explicit non-system PostgreSQL schema name");
